@@ -2402,6 +2402,29 @@ function initPlan(){
   return stored ? stored : clonePlan(BUILTIN_PLAN);
 }
 let PLAN = initPlan();
+
+// Canonical calendar: Week 1 Monday is 27 Jul 2026 (not the old 40-week 1 Jun start).
+const PLAN_START_Y = 2026, PLAN_START_M = 6, PLAN_START_D = 27; // month is 0-indexed (July)
+function planStartDate(){ return new Date(PLAN_START_Y, PLAN_START_M, PLAN_START_D); }
+function localMidnight(d){ d = d || new Date(); return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+function planWeekCount(){ return (PLAN && PLAN.length) ? PLAN.length : 32; }
+function planDayOffset(dateObj){
+  return Math.floor((localMidnight(dateObj) - planStartDate()) / 86400000);
+}
+function dateFromPlanOffset(offset){
+  return new Date(PLAN_START_Y, PLAN_START_M, PLAN_START_D + offset);
+}
+function currentPlanWeek(){
+  var off = planDayOffset(new Date());
+  var n = planWeekCount();
+  if(off < 0) return 1;
+  return Math.min(n, Math.floor(off / 7) + 1);
+}
+function weekFromSessionKey(key){
+  var m = String(key||'').match(/^b?(\d+)[-_]/);
+  return m ? parseInt(m[1], 10) : NaN;
+}
+
 // ── Stage 2: stable session IDs + move/reschedule engine ──
 const SESS_DISC_KEYS = ['swim','bike','long ride','ride','run','brick run','long run','strength','rest'];
 function lineIsHead(l){ var ll=(l||'').toLowerCase().trim(); return SESS_DISC_KEYS.some(function(k){ return ll.startsWith(k); }); }
@@ -2965,8 +2988,8 @@ function renderVolBars(){
   var max=0; PLAN.forEach(function(w){ if(w.hrs>max) max=w.hrs; });
   if(max<=0) max=1;
   var N=PLAN.length;
-  var planStart=new Date(2026,5,1), now=new Date();
-  var curIdx=Math.max(0,Math.min(N-1,Math.floor((now-planStart)/604800000)));
+  var now=new Date();
+  var curIdx=Math.max(0,Math.min(N-1, currentPlanWeek()-1));
   function yOf(h){ return (100 - (h/max)*86 - 7); }
   var pts=PLAN.map(function(w,i){ return [(i+0.5),yOf(w.hrs)]; });
   var line='M '+pts.map(function(p){return p[0].toFixed(2)+' '+p[1].toFixed(2);}).join(' L ');
@@ -3271,9 +3294,7 @@ function renderShifts(){
   var el = document.getElementById('shifts-view');
   if(!el) return;
 
-  var MONTHS = ['Jun 2026','Jul 2026','Aug 2026','Sep 2026','Oct 2026','Nov 2026','Dec 2026','Jan 2027','Feb 2027','Mar 2027'];
   var DAYS_SHORT = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-  var planStart = new Date(2026, 5, 1);
 
   // Build a flat list of all days with their shift data
   var allDays = [];
@@ -3286,7 +3307,7 @@ function renderShifts(){
   // Group into months
   var monthGroups = {};
   allDays.forEach(function(d, idx){
-    var dayDate = new Date(planStart.getTime() + idx * 86400000);
+    var dayDate = dateFromPlanOffset(idx);
     var monthKey = dayDate.getFullYear()+'-'+(dayDate.getMonth()+1);
     var monthLabel = dayDate.toLocaleDateString('en-NZ',{month:'short',year:'numeric'});
     if(!monthGroups[monthKey]) monthGroups[monthKey] = { label: monthLabel, weeks: [] };
@@ -3446,17 +3467,17 @@ function toggleDone(key, el){
       check.classList.add('just-checked');
     }
   }
-  const parts = key.split('_');
-  const wk = parseInt(parts[0]);
-  updateProgress(wk);
-  // Refresh rings immediately if visible
-  const body = document.getElementById('body-'+wk);
-  if(body && body.classList.contains('open')) renderRingsForWeek(wk);
-  // Sync today card if this session belongs to today
-  const tp = getTodayPlan();
-  if(tp && tp.wk === wk) renderTodayCard();
-  const wkMatch = key.match(/^(\d+)_/);
-  if(wkMatch) setTimeout(function(){ checkWeekComplete(parseInt(wkMatch[1])); }, 400);
+  const wk = weekFromSessionKey(key);
+  if(wk){
+    updateProgress(wk);
+    // Refresh rings immediately if visible
+    const body = document.getElementById('body-'+wk);
+    if(body && body.classList.contains('open')) renderRingsForWeek(wk);
+    // Sync today card if this session belongs to today
+    const tp = getTodayPlan();
+    if(tp && tp.wk === wk) renderTodayCard();
+    setTimeout(function(){ checkWeekComplete(wk); }, 400);
+  }
 }
 
 function updateProgress(wk){
@@ -3807,7 +3828,7 @@ function triggerInstall(){
 // ── PWA: Service worker (inline via blob) ─────────────────────
 if('serviceWorker' in navigator){
   const swCode = `
-    const CACHE = 'im-plan-v10';
+    const CACHE = 'im-plan-v11';
     self.addEventListener('install', e => {
       e.waitUntil(caches.open(CACHE).then(cache => cache.addAll(['.', location.href])));
       self.skipWaiting();
@@ -3842,16 +3863,16 @@ var _cdAnimatedOnce = false;
 function countUpDays(el, target){
   var reduce = false;
   try{ reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; }catch(e){}
-  if(reduce || target <= 0){ el.textContent = target + ' days'; return; }
+  if(reduce || target <= 0){ el.textContent = String(target); return; }
   var dur = 900, start = null, from = Math.max(0, target - 60); // count the last stretch for a snappy feel
   function frame(ts){
     if(start === null) start = ts;
     var t = Math.min(1, (ts - start) / dur);
     var eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
     var val = Math.round(from + (target - from) * eased);
-    el.textContent = val + ' days';
+    el.textContent = String(val);
     if(t < 1) requestAnimationFrame(frame);
-    else el.textContent = target + ' days';
+    else el.textContent = String(target);
   }
   requestAnimationFrame(frame);
 }
@@ -3878,7 +3899,7 @@ function renderCountdown(){
       _cdAnimatedOnce = true;
       countUpDays(el, days);
     } else {
-      el.textContent = days + ' days';
+      el.textContent = String(days);
     }
   }
 
@@ -3893,12 +3914,12 @@ function renderCountdown(){
   if(rtSecs) rtSecs.textContent = String(secs).padStart(2,'0');
 
   // Progress bar
-  const totalDays = Math.floor((race - new Date(2026, 5, 1)) / 86400000);
+  const totalDays = Math.max(1, Math.floor((race - planStartDate()) / 86400000));
   const elapsed   = totalDays - days;
   const pct = Math.max(0, Math.min(100, Math.round(elapsed / totalDays * 100)));
   const fill = document.getElementById('progress-fill');
   if(fill) fill.style.width = pct + '%';
-  const wkNum = Math.min(40, Math.floor(elapsed/7)+1);
+  const wkNum = currentPlanWeek();
   const lbl = document.getElementById('prog-label-l');
   if(lbl) lbl.textContent = 'Week ' + wkNum + ' of ' + PLAN.length;
 
@@ -3934,7 +3955,7 @@ function renderRingsForWeek(wk){
     if(!d.session) return;
     const lines = d.session.split(/\n|\\n/);
     lines.forEach(l=>{
-      const match = l.match(/(\\d+\\.?\\d*)\\s*(hr|min)/i);
+      const match = l.match(/(\d+\.?\d*)\s*(hr|min)/i);
       if(!match) return;
       const val = parseFloat(match[1]);
       const unit = match[2].toLowerCase();
@@ -3942,7 +3963,7 @@ function renderRingsForWeek(wk){
       const ll = l.toLowerCase();
       if(/swim/.test(ll)) swimPlanned += mins;
       if(/bike|ride/.test(ll)) bikeHrs += mins;
-      if(/\\brun\\b|brick run|long run/.test(ll)) runPlanned += mins;
+      if(/\brun\b|brick run|long run/.test(ll)) runPlanned += mins;
     });
   });
 
@@ -4262,7 +4283,7 @@ function renderStats(){
   const zonesPromptHTML = '';  // prompt removed — app ships with sensible defaults
 
   // ── SECTION: weekly volume (planned vs logged) ──
-  var _nowWk = Math.min(Math.max(1, Math.floor((Date.now()-Date.parse('2026-07-27'))/(7*86400000))+1), PLAN.length||32);
+  var _nowWk = currentPlanWeek();
   var _startWk = Math.max(1, _nowWk-13);
   var _volRows=[], _maxH=0, _sumP=0, _sumA=0;
   for(var _vw=_startWk; _vw<=_nowWk; _vw++){
@@ -4595,7 +4616,7 @@ function getTomorrowSession(){
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate()+1);
   tomorrow.setHours(0,0,0,0);
-  const planStart = new Date(2026, 5, 1);
+  const planStart = planStartDate();
   const diffDays = Math.floor((tomorrow - planStart)/86400000);
   if(diffDays < 0) return null;
   const wk = Math.floor(diffDays/7)+1;
@@ -4724,7 +4745,7 @@ function checkWeekComplete(wk){
     'That\'s another week in the bank. Taupo is getting closer.',
     'Every session counts. Sub-11 is happening.',
     'Consistency beats intensity. You\'re building something real.',
-    'Week '+wk+' done. 40-'+wk+' left. You\'ve got this.',
+    'Week '+wk+' done. '+(planWeekCount()-wk)+' left. You\'ve got this.',
   ];
   const msg = msgs[wk % msgs.length];
   const overlay = document.createElement('div');
@@ -4763,15 +4784,21 @@ function checkWeekComplete(wk){
 }
 
 function renderPhaseBar(){
-  const phases = [
-    {name:'Foundation', wks:12, color:'#0F7B83'},
-    {name:'Build',      wks:12, color:'#2F6F8F'},
-    {name:'Race Spec',  wks:12, color:'#CB6438'},
-    {name:'Taper',      wks:4,  color:'#6F5FA0'},
+  const palettes = [
+    {match: function(ph){ return /Foundation/.test(ph||''); }, name:'Foundation', color:'#0F7B83'},
+    {match: function(ph){ return /IM Build/.test(ph||''); }, name:'Build', color:'#2F6F8F'},
+    {match: function(ph){ return /Race Specific/.test(ph||''); }, name:'Race Spec', color:'#CB6438'},
+    {match: function(ph){ return /Taper|RACE WEEK/.test(ph||''); }, name:'Taper', color:'#6F5FA0'},
   ];
-  const planStart = new Date(2026, 5, 1);
-  const today = new Date();
-  const elapsedWks = Math.max(0, Math.floor((today - planStart)/604800000));
+  const phases = [];
+  PLAN.forEach(function(w){
+    const pal = palettes.find(function(p){ return p.match(w.ph); }) || palettes[0];
+    const last = phases[phases.length-1];
+    if(!last || last.name !== pal.name) phases.push({name: pal.name, color: pal.color, wks: 1});
+    else last.wks++;
+  });
+  const total = Math.max(1, phases.reduce(function(s,p){ return s+p.wks; }, 0));
+  const elapsedWks = currentPlanWeek() - 1;
 
   const barEl = document.getElementById('phase-bar');
   const lblEl = document.getElementById('phase-labels');
@@ -4780,15 +4807,15 @@ function renderPhaseBar(){
   let barHTML='', lblHTML='', cumWk=0;
   phases.forEach(function(p){
     const startWk=cumWk, endWk=cumWk+p.wks;
-    const pct=Math.round(p.wks/40*100);
+    const pct=(p.wks/total*100).toFixed(2);
     let cls = elapsedWks < startWk ? 'future' : elapsedWks >= endWk ? 'past' : 'current';
     barHTML += '<div class="phase-segment '+cls+'" style="width:'+pct+'%;background:'+p.color+'"></div>';
     const isActive = elapsedWks >= startWk && elapsedWks < endWk;
-    lblHTML += '<span class="phase-lbl'+(isActive?' active':'')+'" style="color:'+(isActive?p.color.replace('#','rgba(')+'cc)':'rgba(255,255,255,0.3)')+'">'+(p.name==='Foundation'?'Foundation':p.name==='Build'?'Build':p.name==='Race Spec'?'Race Spec':'Taper')+'</span>';
+    lblHTML += '<span class="phase-lbl'+(isActive?' active':'')+'" style="color:'+(isActive?p.color:'rgba(255,255,255,0.3)')+'">'+p.name+'</span>';
     cumWk += p.wks;
   });
   barEl.innerHTML = barHTML;
-  lblEl.innerHTML = lblHTML;
+  if(lblEl) lblEl.innerHTML = lblHTML;
 }
 
 function toggleRaceSection(id){
@@ -4872,7 +4899,7 @@ function handlePDF(){
   }
 
   let html = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
-    +'<title>Ironman 2027 · 40-Week Training Plan</title>'
+    +'<title>Ironman 2027 · 32-Week Training Plan</title>'
     +'<style>'
     +'*{box-sizing:border-box;margin:0;padding:0}'
     +'body{font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;font-size:9px;color:#1a1a1a;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
@@ -4903,9 +4930,9 @@ function handlePDF(){
     +'<div class="header">'
       +'<div class="header-left">'
         +'<h1>Ironman Taupo 2027</h1>'
-        +'<h2>40-Week Training Plan · 6 March 2027 · Target: Sub 11:30</h2>'
+        +'<h2>32-Week Training Plan · 6 March 2027 · Target: Sub 11:30</h2>'
       +'</div>'
-      +'<div class="header-right">Printed '+new Date().toLocaleDateString('en-NZ',{day:'numeric',month:'short',year:'numeric'})+'<br>Weeks 1–40 · Jun 2026 – Mar 2027</div>'
+      +'<div class="header-right">Printed '+new Date().toLocaleDateString('en-NZ',{day:'numeric',month:'short',year:'numeric'})+'<br>Weeks 1–'+planWeekCount()+' · Jul 2026 – Mar 2027</div>'
     +'</div>';
 
   // Group weeks by phase
@@ -4971,12 +4998,11 @@ function handlePDF(){
 
 function flagMissedSessions(){
   var today = new Date(); today.setHours(0,0,0,0);
-  var planStart = new Date(2026, 5, 1);
   var DISC_KEYS = ['swim','bike','long ride','run','brick run','long run','strength'];
   PLAN.forEach(function(w){
     w.days.forEach(function(d,di){
       if(!d.session || d.sd===2) return;
-      var dayDate = new Date(planStart.getTime() + ((w.wk-1)*7+di)*86400000);
+      var dayDate = dateFromPlanOffset((w.wk-1)*7+di);
       dayDate.setHours(0,0,0,0);
       if(dayDate >= today) return;
       var card = document.getElementById('wc-'+w.wk);
@@ -5031,8 +5057,7 @@ function renderTrainingLoad(){
   var statusEl = document.getElementById('load-status');
   if(!el) return;
   var today = new Date();
-  var planStart = new Date(2026, 5, 1);
-  var currentWk = Math.min(40, Math.floor((today - planStart)/604800000)+1);
+  var currentWk = currentPlanWeek();
   var startWk = Math.max(1, currentWk - 11);
   var weekData = [];
   for(var wk=startWk; wk<=currentWk; wk++){
@@ -5081,9 +5106,9 @@ function getTodayPlan(){
   const today = new Date();
   // Build local midnight for today and plan start to avoid UTC offset issues
   const todayLocal = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  const planStartLocal = new Date(2026, 5, 1); // June 1 2026, local midnight
+  const planStartLocal = planStartDate(); // 27 Jul 2026, local midnight
   const diffDays = Math.floor((todayLocal - planStartLocal) / 86400000);
-  if(diffDays < 0 || diffDays >= 280) return null;
+  if(diffDays < 0 || diffDays >= planWeekCount()*7) return null;
   const wk = Math.floor(diffDays/7)+1;
   const di = diffDays%7;
   const w = PLAN.find(function(x){ return x.wk===wk; });
@@ -5201,9 +5226,7 @@ function dayPlannedDone(wk, di){
 }
 function _dayInfoByOffset(o){ return dayPlannedDone(Math.floor(o/7)+1, o%7); }
 function computeStreak(){
-  var planStart = new Date(2026,5,1);
-  var t = new Date(); var todayLocal = new Date(t.getFullYear(),t.getMonth(),t.getDate());
-  var todayOffset = Math.floor((todayLocal - planStart)/86400000);
+  var todayOffset = planDayOffset(new Date());
   if(todayOffset < 0) return 0;
   var start = todayOffset;
   var todayInfo = _dayInfoByOffset(todayOffset);
@@ -5421,8 +5444,7 @@ function toggleTodaySesh(key, el, wk, di){
   const body = document.getElementById('body-'+wk);
   if(body && body.classList.contains('open')) renderRingsForWeek(wk);
   renderTodayCard();
-  const wkMatch = key.match(/^(\d+)_/);
-  if(wkMatch) setTimeout(function(){ checkWeekComplete(parseInt(wkMatch[1])); }, 400);
+  setTimeout(function(){ checkWeekComplete(wk); }, 400);
 }
 
 // ═══════════════════════════════════════════════════
@@ -5530,10 +5552,7 @@ function openLogForDate(dateStr){
   PLAN.forEach(function(w){
     w.days.forEach(function(d, di){
       if(d.date === dateStr){
-        // Build a real Date object from the plan start + offset
-        const planStart = new Date(2026, 5, 1);
-        const dayOffset = (w.wk - 1) * 7 + di;
-        foundDate = new Date(planStart.getTime() + dayOffset * 86400000);
+        foundDate = dateFromPlanOffset((w.wk - 1) * 7 + di);
       }
     });
   });
@@ -5552,7 +5571,7 @@ function openQuickLog(){
   const now = new Date();
   // Default to today, or first plan day if before plan start
   const todayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const planStart = new Date(2026, 5, 1);
+  const planStart = planStartDate();
   const targetLocal = todayLocal >= planStart ? todayLocal : planStart;
 
   _qlSetDate(targetLocal);
@@ -5561,9 +5580,10 @@ function openQuickLog(){
 }
 
 function _qlSetDate(dateObj){
-  const planStart = new Date(2026, 5, 1);
+  const planStart = planStartDate();
   const diffDays = Math.floor((dateObj - planStart) / 86400000);
-  const wk = Math.max(1, Math.min(40, Math.floor(diffDays/7)+1));
+  const n = planWeekCount();
+  const wk = Math.max(1, Math.min(n, Math.floor(diffDays/7)+1));
   const di = Math.max(0, Math.min(6, diffDays%7));
   const w = PLAN.find(function(x){ return x.wk===wk; });
   const day = w ? w.days[di] : null;
@@ -5807,12 +5827,11 @@ function renderNextShiftCallout(){
   const el = document.getElementById('shifts-view');
   if(!el) return;
   const today = new Date(); today.setHours(0,0,0,0);
-  const planStart = new Date(2026, 5, 1);
 
   let nextS1 = null, nextS2 = null;
   PLAN.forEach(function(w){
     w.days.forEach(function(d,di){
-      const dayDate = new Date(planStart.getTime() + ((w.wk-1)*7+di)*86400000);
+      const dayDate = dateFromPlanOffset((w.wk-1)*7+di);
       dayDate.setHours(0,0,0,0);
       if(dayDate <= today) return;
       if(!nextS1 && d.sd===1) nextS1 = { date: dayDate, dateStr: d.date, wk: w.wk };
@@ -5920,9 +5939,7 @@ setTimeout(function(){
 
 // Mark current week (calculated from today's date)
 (function(){
-  const planStart = new Date(2026, 5, 1);
-  const elapsed = Math.max(0, Math.floor((new Date() - planStart) / 604800000));
-  const currentWk = Math.min(40, elapsed + 1);
+  const currentWk = currentPlanWeek();
   const card = document.getElementById('wc-'+currentWk);
   if(card) card.classList.add('current');
 })();
