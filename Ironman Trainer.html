@@ -816,6 +816,10 @@ body{text-rendering:optimizeLegibility;-moz-osx-font-smoothing:grayscale}
 .race-proj-strip.over .rps-verdict{color:#C4622D}
 .ql-asplanned{margin-left:auto;background:var(--green-l);color:var(--green-d);border:none;border-radius:var(--r-pill);padding:5px 11px;font-size:10.5px;font-weight:800;font-family:var(--font-display);cursor:pointer;-webkit-tap-highlight-color:transparent;transition:transform .12s;flex-shrink:0}
 .ql-asplanned:active{transform:scale(0.94)}
+.ql-garmin-btn{display:inline-flex;align-items:center;gap:5px;background:var(--card-2);border:1px solid var(--border-2);color:var(--text);font-size:11px;font-weight:700;font-family:var(--font-display);padding:6px 11px;border-radius:var(--r-pill);cursor:pointer;flex-shrink:0;-webkit-tap-highlight-color:transparent}
+.ql-garmin-btn:active{transform:scale(0.96)}
+.ql-day-prescribed{width:100%;margin:0 0 10px;padding:10px 12px;border:none;border-radius:11px;background:var(--green-l);color:var(--green-d);font-size:13px;font-weight:800;font-family:var(--font-display);cursor:pointer;-webkit-tap-highlight-color:transparent}
+.ql-garmin-hint{font-size:10.5px;color:var(--text-3);line-height:1.45;margin:0 0 12px}
 .vp-headline{font-size:13px;color:var(--text-2);margin-bottom:12px;font-weight:600}
 .vp-headline b{color:var(--text);font-family:var(--font-display);font-size:15px}
 .vp-pct{color:var(--green);font-weight:800;font-family:var(--font-display)}
@@ -979,6 +983,7 @@ body{text-rendering:optimizeLegibility;-moz-osx-font-smoothing:grayscale}
   </div>
 </div>
 <input type="file" id="import-file" accept=".json" style="display:none" onchange="loadImport(this)">
+<input type="file" id="garmin-file" accept=".tcx,.gpx,.xml,application/gpx+xml,application/vnd.garmin.tcx+xml" style="display:none" onchange="importGarminFile(this)">
 <script>
 const BUILTIN_PLAN = [
  {
@@ -2395,6 +2400,7 @@ function savePlan(markCustom){
     var isCustom = (markCustom===undefined) ? !!prev.custom : !!markCustom;
     localStorage.setItem(PLAN_STORAGE_KEY, JSON.stringify({version:2, custom:isCustom, savedAt:Date.now(), weeks:PLAN}));
   }catch(e){ console.warn('Could not save plan.', e); }
+  if(typeof scheduleSilentBackup==='function') scheduleSilentBackup();
 }
 function planIsCustom(){ try{ var o=JSON.parse(localStorage.getItem(PLAN_STORAGE_KEY)); return !!(o && o.custom); }catch(e){ return false; } }
 function initPlan(){
@@ -2402,6 +2408,19 @@ function initPlan(){
   return stored ? stored : clonePlan(BUILTIN_PLAN);
 }
 let PLAN = initPlan();
+
+// Week 1 Monday is 27 Jul 2026 (needed so Garmin files land on the right day).
+const PLAN_START_Y = 2026, PLAN_START_M = 6, PLAN_START_D = 27;
+function planStartDate(){ return new Date(PLAN_START_Y, PLAN_START_M, PLAN_START_D); }
+function localMidnight(d){ d = d || new Date(); return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+function planWeekCount(){ return (PLAN && PLAN.length) ? PLAN.length : 32; }
+function planDayOffset(dateObj){
+  return Math.floor((localMidnight(dateObj) - planStartDate()) / 86400000);
+}
+function dateFromPlanOffset(offset){
+  return new Date(PLAN_START_Y, PLAN_START_M, PLAN_START_D + offset);
+}
+
 // ── Stage 2: stable session IDs + move/reschedule engine ──
 const SESS_DISC_KEYS = ['swim','bike','long ride','ride','run','brick run','long run','strength','rest'];
 function lineIsHead(l){ var ll=(l||'').toLowerCase().trim(); return SESS_DISC_KEYS.some(function(k){ return ll.startsWith(k); }); }
@@ -2709,21 +2728,7 @@ function resetPlanToBuiltIn(){
 }
 function closePlanModal(){ var ov = document.getElementById('plan-modal-ov'); if(ov) ov.remove(); }
 function backupAllData(){
-  try{
-    var data={};
-    for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); data[k]=localStorage.getItem(k); }
-    var out={ _app:'ironman-taupo', _backup:true, version:1, savedAt:new Date().toISOString(), data:data };
-    var blob=new Blob([JSON.stringify(out)],{type:'application/json'});
-    var url=URL.createObjectURL(blob);
-    var stamp=new Date().toISOString().slice(0,10);
-    var a=document.createElement('a');
-    a.href=url; a.download='ironman_backup_'+stamp+'.json';
-    document.body.appendChild(a); a.click();
-    setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); },600);
-    try{ localStorage.setItem('last-backup-at', new Date().toISOString()); }catch(e){}
-    dismissBackupNudge();
-    if(typeof showToast==='function') showToast('Backup saved \u00b7 '+Object.keys(data).length+' items');
-  }catch(e){ alert('Could not create the backup.\n\n'+(e&&e.message||e)); }
+  shareOrDownloadBackup();
 }
 
 // ── Data-safety backup nudge ──────────────────────────────────
@@ -2750,19 +2755,19 @@ function maybeShowBackupNudge(){
     var stale = true;
     if(last){
       var days = (Date.now() - new Date(last).getTime())/86400000;
-      stale = days >= 14;
+      stale = days >= 7;
     }
     if(!stale) return;
     var host = document.getElementById('backup-nudge-host');
     if(!host || document.getElementById('backup-nudge')) return;
-    var msg = last ? 'It\u2019s been a while since your last backup.' : 'Your training log isn\u2019t backed up yet.';
+    var msg = last ? 'Save this week\u2019s copy to Files or iCloud.' : 'Your log is on this phone only \u2014 save a copy to iCloud.';
     var el = document.createElement('div');
     el.id = 'backup-nudge';
     el.style.cssText = 'display:flex;align-items:center;gap:10px;margin:0 0 10px;padding:11px 12px 11px 14px;background:var(--gold-l);border:1px solid rgba(188,122,44,0.25);border-radius:12px;font-family:inherit;transition:opacity 0.25s';
     el.innerHTML = '<span style="font-size:17px;flex-shrink:0">\uD83D\uDCBE</span>'
-      + '<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700;color:var(--gold)">Back up your data</div>'
+      + '<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700;color:var(--gold)">Back up to iCloud</div>'
       + '<div style="font-size:10.5px;color:var(--text-2);margin-top:1px">'+msg+'</div></div>'
-      + '<button onclick="backupAllData()" style="background:var(--gold);color:#fff;border:none;border-radius:16px;padding:7px 13px;font-size:12px;font-weight:800;font-family:inherit;cursor:pointer;flex-shrink:0;-webkit-tap-highlight-color:transparent">Back up</button>'
+      + '<button onclick="backupAllData()" style="background:var(--gold);color:#fff;border:none;border-radius:16px;padding:7px 13px;font-size:12px;font-weight:800;font-family:inherit;cursor:pointer;flex-shrink:0;-webkit-tap-highlight-color:transparent">Save</button>'
       + '<button onclick="snoozeBackupNudge()" aria-label="Dismiss" style="background:transparent;border:none;color:var(--text-3);font-size:16px;cursor:pointer;flex-shrink:0;padding:2px 4px;-webkit-tap-highlight-color:transparent">\u2715</button>';
     host.insertBefore(el, host.firstChild);
   }catch(e){}
@@ -2795,7 +2800,379 @@ function restoreAllData(input){
   reader.readAsText(file);
 }
 
-var APP_VERSION = '2.7';
+function collectBackupSnapshot(){
+  var data={};
+  for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k) data[k]=localStorage.getItem(k); }
+  return { _app:'ironman-taupo', _backup:true, version:2, savedAt:new Date().toISOString(), data:data };
+}
+function hasLoggedTraining(data){
+  if(data){
+    return Object.keys(data).some(function(k){ return k.indexOf('done_')===0||k.indexOf('trk_')===0||k.indexOf('extra_')===0; });
+  }
+  try{
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i);
+      if(k && (k.indexOf('done_')===0||k.indexOf('trk_')===0||k.indexOf('extra_')===0)) return true;
+    }
+  }catch(e){}
+  return false;
+}
+function openBackupIdb(){
+  return new Promise(function(resolve, reject){
+    try{
+      if(!window.indexedDB){ reject(new Error('no idb')); return; }
+      var req=indexedDB.open('im-taupo-backup', 1);
+      req.onupgradeneeded=function(){
+        var db=req.result;
+        if(!db.objectStoreNames.contains('snaps')) db.createObjectStore('snaps');
+      };
+      req.onsuccess=function(){ resolve(req.result); };
+      req.onerror=function(){ reject(req.error); };
+    }catch(e){ reject(e); }
+  });
+}
+function saveSilentBackup(){
+  try{
+    if(!hasLoggedTraining()) return;
+    var snap=collectBackupSnapshot();
+    openBackupIdb().then(function(db){
+      var tx=db.transaction('snaps','readwrite');
+      tx.objectStore('snaps').put(snap, 'latest');
+      try{ localStorage.setItem('last-silent-backup-at', snap.savedAt); }catch(e){}
+    }).catch(function(){});
+  }catch(e){}
+}
+var _silentBackupTimer=null;
+function scheduleSilentBackup(){
+  clearTimeout(_silentBackupTimer);
+  _silentBackupTimer=setTimeout(saveSilentBackup, 900);
+}
+function applyBackupData(data){
+  localStorage.clear();
+  Object.keys(data).forEach(function(k){ try{ localStorage.setItem(k, data[k]); }catch(e){} });
+}
+function shareOrDownloadBackup(){
+  try{
+    saveSilentBackup();
+    var snap=collectBackupSnapshot();
+    var json=JSON.stringify(snap);
+    var stamp=(snap.savedAt||'').slice(0,10) || 'backup';
+    var file=new File([json], 'ironman_backup_'+stamp+'.json', {type:'application/json'});
+    var markSaved=function(){
+      try{ localStorage.setItem('last-backup-at', new Date().toISOString()); }catch(e){}
+      dismissBackupNudge();
+      if(typeof showToast==='function') showToast('Backup saved \u00b7 '+Object.keys(snap.data).length+' items');
+    };
+    if(navigator.share && navigator.canShare && navigator.canShare({files:[file]})){
+      navigator.share({files:[file], title:'Ironman Trainer backup'}).then(markSaved).catch(function(err){
+        if(err && err.name==='AbortError') return;
+        downloadBackupBlob(json, stamp); markSaved();
+      });
+      return;
+    }
+    downloadBackupBlob(json, stamp);
+    markSaved();
+  }catch(e){ alert('Could not create the backup.\n\n'+(e&&e.message||e)); }
+}
+function downloadBackupBlob(json, stamp){
+  var blob=new Blob([json],{type:'application/json'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');
+  a.href=url; a.download='ironman_backup_'+stamp+'.json';
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); },600);
+}
+function maybeRecoverFromIndexedDB(){
+  try{
+    if(hasLoggedTraining()) return;
+    openBackupIdb().then(function(db){
+      var tx=db.transaction('snaps','readonly');
+      var req=tx.objectStore('snaps').get('latest');
+      req.onsuccess=function(){
+        var snap=req.result;
+        if(!snap||!snap.data||!hasLoggedTraining(snap.data)) return;
+        if(document.getElementById('idb-recover-ov')) return;
+        var n=Object.keys(snap.data).filter(function(k){ return k.indexOf('trk_')===0||k.indexOf('done_')===0; }).length;
+        var ov=document.createElement('div'); ov.id='idb-recover-ov';
+        ov.style.cssText='position:fixed;inset:0;z-index:1600;background:rgba(8,20,22,0.55);display:flex;align-items:flex-end;justify-content:center;';
+        ov.innerHTML='<div style="background:var(--card);color:var(--text);width:100%;max-width:480px;border-radius:18px 18px 0 0;padding:18px 18px calc(18px + env(safe-area-inset-bottom,0px))">'
+          +'<div style="font-family:var(--font-display);font-size:17px;font-weight:800;margin-bottom:6px">Recover training log?</div>'
+          +'<div style="font-size:13px;color:var(--text-2);line-height:1.5;margin-bottom:16px">A backup on this phone has '+n+' logged items'+(snap.savedAt?' \u00b7 '+String(snap.savedAt).slice(0,10):'')+'. Restore it?</div>'
+          +'<button onclick="confirmIdbRestore()" style="width:100%;padding:13px;border:none;border-radius:11px;background:linear-gradient(135deg,#F4B860,#DD6A4A);color:#1A1410;font-size:14px;font-weight:800;font-family:var(--font-display);cursor:pointer;margin-bottom:8px">Restore backup</button>'
+          +'<button onclick="document.getElementById(\'idb-recover-ov\').remove()" style="width:100%;padding:12px;border:none;background:transparent;color:var(--text-3);font-size:13px;font-weight:600;cursor:pointer">Not now</button>'
+          +'</div>';
+        document.body.appendChild(ov);
+        window._idbRecoverSnap=snap;
+      };
+    }).catch(function(){});
+  }catch(e){}
+}
+function confirmIdbRestore(){
+  var snap=window._idbRecoverSnap; window._idbRecoverSnap=null;
+  var ov=document.getElementById('idb-recover-ov'); if(ov) ov.remove();
+  if(!snap||!snap.data) return;
+  try{
+    applyBackupData(snap.data);
+    if(typeof showToast==='function') showToast('Log restored \u00b7 reloading\u2026');
+    setTimeout(function(){ location.reload(); }, 400);
+  }catch(e){ alert('Could not restore that backup.'); }
+}
+
+function backupLastLabel(){
+  try{
+    var last=localStorage.getItem('last-backup-at');
+    var silent=localStorage.getItem('last-silent-backup-at');
+    var bits=[];
+    if(last) bits.push('Last copy to Files/iCloud: '+String(last).slice(0,10));
+    if(silent) bits.push('Phone copy: '+String(silent).slice(0,16).replace('T',' '));
+    return bits.join(' \u00b7 ') || 'No backup yet \u2014 a copy is saved on this phone as you log.';
+  }catch(e){ return ''; }
+}
+
+function sportFromText(s){
+  var t=String(s||'').toLowerCase();
+  if(/swim|pool|open.?water/.test(t)) return 'swim';
+  if(/bike|bik|cycl|ride/.test(t)) return 'bike';
+  if(/run|jog|trail/.test(t)) return 'run';
+  if(/strength|gym|weight/.test(t)) return 'strength';
+  return '';
+}
+function xmlLocal(node, tag){
+  if(!node) return [];
+  var out=[], all=node.getElementsByTagName('*');
+  for(var i=0;i<all.length;i++){
+    if(all[i]===node) continue;
+    if((all[i].localName||all[i].tagName||'').replace(/^.*:/,'').toLowerCase()===tag.toLowerCase()) out.push(all[i]);
+  }
+  return out;
+}
+function xmlText(node, tag){
+  var els=xmlLocal(node, tag);
+  return els.length && els[0].textContent ? els[0].textContent.trim() : '';
+}
+function xmlDeepText(node, tag){
+  var els=xmlLocal(node, tag);
+  if(!els.length) return '';
+  var inner=xmlLocal(els[0], 'Value');
+  if(inner.length && inner[0].textContent) return inner[0].textContent.trim();
+  return (els[0].textContent||'').trim();
+}
+function haversineKm(a,b){
+  var R=6371, dLat=(b.lat-a.lat)*Math.PI/180, dLon=(b.lon-a.lon)*Math.PI/180;
+  var x=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(a.lat*Math.PI/180)*Math.cos(b.lat*Math.PI/180)*Math.sin(dLon/2)*Math.sin(dLon/2);
+  return 2*R*Math.asin(Math.min(1, Math.sqrt(x)));
+}
+function roundDist(disc, km){
+  if(!(km>0)) return 0;
+  if(disc==='bike') return Math.round(km*10)/10;
+  return Math.round(km*100)/100;
+}
+function parseGarminXml(text, filename){
+  if(/\.fit$/i.test(filename||'')) throw new Error('FIT files aren\u2019t supported. In Garmin Connect export the activity as TCX or GPX.');
+  var xml=new DOMParser().parseFromString(text, 'application/xml');
+  if(xml.querySelector('parsererror')) throw new Error('Could not read that file. Export TCX or GPX from Garmin Connect.');
+  var isTcx=xml.getElementsByTagName('TrainingCenterDatabase').length || /tcx/i.test(filename||'');
+  return isTcx ? parseTcxDoc(xml) : parseGpxDoc(xml);
+}
+function parseTcxDoc(xml){
+  var acts=xml.getElementsByTagName('Activity');
+  var out=[];
+  for(var i=0;i<acts.length;i++){
+    var act=acts[i];
+    var sport=act.getAttribute('Sport')||'';
+    var notes=xmlText(act,'Notes')+' '+xmlText(act,'Name')+' '+xmlText(act,'Id');
+    var disc=sportFromText(sport)||sportFromText(notes);
+    var laps=act.getElementsByTagName('Lap');
+    var distM=0, timeS=0, hrSum=0, hrN=0, start=null;
+    for(var li=0;li<laps.length;li++){
+      var lap=laps[li];
+      distM += parseFloat(xmlText(lap,'DistanceMeters'))||0;
+      timeS += parseFloat(xmlText(lap,'TotalTimeSeconds'))||0;
+      var hr=parseFloat(xmlDeepText(lap,'AverageHeartRateBpm'))||0;
+      if(hr>0){ hrSum+=hr; hrN++; }
+      if(!start && lap.getAttribute('StartTime')) start=lap.getAttribute('StartTime');
+    }
+    if(!start) start=xmlText(act,'Id');
+    if(!(distM>0) || !(timeS>0)){
+      var tps=act.getElementsByTagName('Trackpoint');
+      var firstT=null, lastT=null, lastD=0;
+      for(var ti=0;ti<tps.length;ti++){
+        var tp=tps[ti];
+        var ts=xmlText(tp,'Time');
+        var dm=parseFloat(xmlText(tp,'DistanceMeters'))||0;
+        if(ts){ var dt=new Date(ts); if(!firstT) firstT=dt; lastT=dt; if(!start) start=ts; }
+        if(dm>lastD) lastD=dm;
+        var hrv=parseFloat(xmlDeepText(tp,'HeartRateBpm'))||0;
+        if(hrv>0){ hrSum+=hrv; hrN++; }
+      }
+      if(!(distM>0) && lastD>0) distM=lastD;
+      if(!(timeS>0) && firstT && lastT) timeS=Math.max(0,(lastT-firstT)/1000);
+    }
+    if(distM>0 || timeS>0) out.push({disc:disc, distKm:distM/1000, timeMin:timeS/60, hr: hrN?Math.round(hrSum/hrN):0, start:start, source:'tcx'});
+  }
+  if(!out.length) throw new Error('No laps found in that TCX file.');
+  return out;
+}
+function parseGpxDoc(xml){
+  var name=xmlText(xml,'name')+' '+xmlText(xml,'type')+' '+xmlText(xml,'desc');
+  var disc=sportFromText(name);
+  var pts=xml.getElementsByTagName('trkpt');
+  if(!pts.length) pts=xml.getElementsByTagName('wpt');
+  var dist=0, times=[], hrs=[], prev=null;
+  for(var i=0;i<pts.length;i++){
+    var pt=pts[i];
+    var lat=parseFloat(pt.getAttribute('lat')), lon=parseFloat(pt.getAttribute('lon'));
+    if(isFinite(lat)&&isFinite(lon)){
+      if(prev){ var step=haversineKm(prev,{lat:lat,lon:lon}); if(step>0 && step<5) dist+=step; }
+      prev={lat:lat,lon:lon};
+    }
+    var tEl=pt.getElementsByTagName('time')[0];
+    if(tEl&&tEl.textContent) times.push(new Date(tEl.textContent));
+    var hrEl=null;
+    var kids=pt.getElementsByTagName('*');
+    for(var k=0;k<kids.length;k++){
+      var ln=(kids[k].localName||kids[k].tagName||'').toLowerCase();
+      if(ln==='hr' || ln==='heartrate'){ hrEl=kids[k]; break; }
+    }
+    if(hrEl){ var hv=parseFloat(hrEl.textContent); if(hv>0) hrs.push(hv); }
+  }
+  var timeMin=0, start=null;
+  if(times.length>=2){ timeMin=(times[times.length-1]-times[0])/60000; start=times[0].toISOString(); }
+  else if(times.length) start=times[0].toISOString();
+  if(!(dist>0) && !(timeMin>0)) throw new Error('No track points found in that GPX file.');
+  var hr=0; if(hrs.length){ var s=0; hrs.forEach(function(h){s+=h;}); hr=Math.round(s/hrs.length); }
+  return [{disc:disc, distKm:dist, timeMin:timeMin, hr:hr, start:start, source:'gpx'}];
+}
+function normPlanDateLabel(s){
+  var m=String(s||'').trim().match(/^0?(\d{1,2})\s+([A-Za-z]{3})/);
+  return m ? (parseInt(m[1],10)+' '+m[2].slice(0,3).toLowerCase()) : '';
+}
+function findPlanDayForDate(dateObj){
+  var day=localMidnight(dateObj);
+  var off=planDayOffset(day);
+  if(off>=0 && off<planWeekCount()*7){
+    var wk=Math.floor(off/7)+1, di=((off%7)+7)%7;
+    var w=PLAN.find(function(x){ return x.wk===wk; });
+    if(w && w.days[di]) return {wk:wk, di:di, day:w.days[di]};
+  }
+  var label=normPlanDateLabel(day.toLocaleDateString('en-GB',{day:'2-digit',month:'short'}));
+  var found=null;
+  PLAN.forEach(function(w){
+    (w.days||[]).forEach(function(d,di){
+      if(!found && normPlanDateLabel(d.date)===label) found={wk:w.wk, di:di, day:d};
+    });
+  });
+  return found;
+}
+function pickGarminFile(){
+  var el=document.getElementById('garmin-file');
+  if(el) el.click();
+}
+function importGarminFile(input){
+  var file=input&&input.files&&input.files[0];
+  if(!file) return;
+  var name=file.name||'';
+  var reader=new FileReader();
+  reader.onload=function(){
+    try{
+      var acts=parseGarminXml(String(reader.result||''), name);
+      applyGarminActivities(acts);
+    }catch(e){
+      alert((e&&e.message)||'Could not import that Garmin file.');
+    }
+    input.value='';
+  };
+  reader.onerror=function(){ alert('Could not read that file.'); input.value=''; };
+  reader.readAsText(file);
+}
+function applyGarminActivities(acts){
+  if(!acts||!acts.length) return;
+  function extraIdForDisc(wk, di, disc){
+    var extras=getExtraSessions(wk, di)||[];
+    for(var i=0;i<extras.length;i++){ if(extras[i].disc===disc) return extras[i].id; }
+    return addExtraSession(wk, di, disc);
+  }
+  function applyOne(act, disc){
+    try{
+      if(!act.start) throw new Error('That file has no date.');
+      var slot=findPlanDayForDate(new Date(act.start));
+      if(!slot) throw new Error('That activity isn\u2019t in the 27 Jul 2026 \u2013 6 Mar 2027 plan.');
+      var planned=detectDiscs(slot.day && slot.day.sd!==2 ? slot.day.session : '');
+      var dist=roundDist(disc, act.distKm);
+      var time=Math.round(act.timeMin);
+      if(!(dist>0) && !(time>0)) throw new Error('No distance or time in that file.');
+      if(planned.indexOf(disc)>=0){
+        if(dist>0) saveTrackerField(slot.wk, slot.di, disc, 'dist', String(dist));
+        if(time>0) saveTrackerField(slot.wk, slot.di, disc, 'time', String(time));
+        if(act.hr>0) saveTrackerField(slot.wk, slot.di, disc, 'hr', String(act.hr));
+        if(disc==='run' && dist>0 && time>0 && typeof fmtPace==='function'){
+          var p=fmtPace('run', dist, time).replace(/\s*\/km.*/,'');
+          if(p) saveTrackerField(slot.wk, slot.di, disc, 'pace', p);
+        }
+        if(disc==='swim' && dist>0 && time>0 && typeof fmtPace==='function'){
+          var sp=fmtPace('swim', dist, time).replace(/\s*\/100m.*/,'');
+          if(sp) saveTrackerField(slot.wk, slot.di, disc, 'pace', sp);
+        }
+      } else {
+        var id=extraIdForDisc(slot.wk, slot.di, disc);
+        if(dist>0) saveExtraField(slot.wk, slot.di, id, 'dist', String(dist));
+        if(time>0) saveExtraField(slot.wk, slot.di, id, 'time', String(time));
+        if(act.hr>0) saveExtraField(slot.wk, slot.di, id, 'hr', String(act.hr));
+      }
+      openQuickLogAt(slot.wk, slot.di, localMidnight(new Date(act.start)));
+      scheduleSilentBackup();
+      var bits=[];
+      if(dist>0) bits.push(dist+' km');
+      if(time>0) bits.push(time+' min');
+      if(typeof showToast==='function') showToast('Garmin '+disc+' \u00b7 '+bits.join(' \u00b7 '));
+    }catch(e){
+      alert((e&&e.message)||'Could not apply that Garmin file.');
+    }
+  }
+  function next(i){
+    if(i>=acts.length) return;
+    var act=acts[i];
+    var disc=act.disc;
+    if(!disc){
+      pickDiscThen(act, function(d){ applyOne(act,d); next(i+1); });
+      return;
+    }
+    applyOne(act, disc);
+    next(i+1);
+  }
+  next(0);
+}
+function pickDiscThen(act, cb){
+  var ov=document.createElement('div'); ov.id='garmin-disc-ov';
+  ov.style.cssText='position:fixed;inset:0;z-index:1700;background:rgba(8,20,22,0.55);display:flex;align-items:flex-end;justify-content:center;';
+  var chips=['swim','bike','run','strength'].map(function(d){
+    return '<button onclick="window._garminPickDisc(\''+d+'\')" style="flex:1;padding:12px 8px;border:1px solid var(--border-2);border-radius:11px;background:var(--card);font-size:13px;font-weight:700;font-family:var(--font-display);color:var(--text);cursor:pointer">'+d.charAt(0).toUpperCase()+d.slice(1)+'</button>';
+  }).join('');
+  ov.innerHTML='<div style="background:var(--card);width:100%;max-width:480px;border-radius:18px 18px 0 0;padding:18px 18px calc(18px + env(safe-area-inset-bottom,0px))">'
+    +'<div style="font-family:var(--font-display);font-size:16px;font-weight:800;margin-bottom:6px">What discipline was this?</div>'
+    +'<div style="font-size:12px;color:var(--text-3);margin-bottom:14px">Garmin didn\u2019t label the sport.</div>'
+    +'<div style="display:flex;gap:8px">'+chips+'</div></div>';
+  window._garminPickDisc=function(d){ ov.remove(); window._garminPickDisc=null; cb(d); };
+  document.body.appendChild(ov);
+}
+function openQuickLogAt(wk, di, dateObj){
+  var w=PLAN.find(function(x){ return x.wk===wk; });
+  var day=w ? w.days[di] : null;
+  _qlWk=wk; _qlDi=di; _qlDay=day;
+  var d=dateObj||dateFromPlanOffset((wk-1)*7+di);
+  var iso=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  var picker=document.getElementById('ql-date-picker');
+  if(picker){ picker.value=iso; picker.min='2026-07-27'; picker.max='2027-03-06'; }
+  var el=document.getElementById('ql-date');
+  if(el) el.textContent='Week '+wk+' \u00b7 '+d.toLocaleDateString('en-NZ',{weekday:'long',day:'numeric',month:'long'});
+  var t=document.getElementById('ql-title'); if(t) t.textContent='Log a Session';
+  renderQuickLogSessions(wk, di, day);
+  document.getElementById('quick-log-bg').classList.add('open');
+  document.body.style.overflow='hidden';
+}
+
+
+var APP_VERSION = '2.8';
 
 // ── First-run onboarding ──────────────────────────────────────
 function maybeShowOnboarding(){
@@ -2897,16 +3274,16 @@ function openPlanModal(){
       <div id="plan-modal-status" style="font-size:12.5px;color:var(--text-2);margin-bottom:14px">${planSummaryText()}</div>
       <div style="font-size:9.5px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Your data &mdash; back this up</div>
       <input type="file" id="data-restore-input" accept="application/json,.json" style="display:none" onchange="restoreAllData(this)">
-      <button onclick="backupAllData()" style="width:100%;padding:13px;border:none;border-radius:11px;background:linear-gradient(135deg,#F4B860,#DD6A4A);color:#1A1410;font-size:14px;font-weight:800;font-family:var(--font-display);cursor:pointer;margin-bottom:8px;-webkit-tap-highlight-color:transparent">Back up everything</button>
+      <button onclick="backupAllData()" style="width:100%;padding:13px;border:none;border-radius:11px;background:linear-gradient(135deg,#F4B860,#DD6A4A);color:#1A1410;font-size:14px;font-weight:800;font-family:var(--font-display);cursor:pointer;margin-bottom:8px;-webkit-tap-highlight-color:transparent">Save backup to Files / iCloud</button>
       <button onclick="document.getElementById('data-restore-input').click()" style="width:100%;padding:12px;border:1px solid var(--border-2);border-radius:11px;background:var(--card);color:var(--text);font-size:13px;font-weight:600;font-family:var(--font-display);cursor:pointer;margin-bottom:8px;-webkit-tap-highlight-color:transparent">Restore from backup</button>
-      <div style="font-size:11px;color:var(--text-3);line-height:1.5;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border)">Saves <b>everything</b> &mdash; plan, every logged session, completions and your fitness numbers &mdash; to one file you can keep in Files or iCloud. Do this regularly: phone storage can be cleared by iOS or lost with the device.</div>
+      <div id="backup-status-line" style="font-size:11px;color:var(--text-3);line-height:1.5;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border)">${backupLastLabel()} A silent copy stays on this phone as you log. Once a week, Save to Files or iCloud (Share \u2192 Save to Files) so a reinstall cannot wipe the season.</div>
       <div style="font-size:9.5px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px">Plan</div>
       
       <input type="file" id="plan-import-input" accept="application/json,.json" style="display:none" onchange="importPlanFile(this)">
       <button onclick="document.getElementById('plan-import-input').click()" style="width:100%;padding:13px;border:none;border-radius:11px;background:linear-gradient(135deg,var(--green),var(--green-d));color:#fff;font-size:14px;font-weight:700;font-family:var(--font-display);cursor:pointer;margin-bottom:8px;-webkit-tap-highlight-color:transparent">Import plan from file</button>
       <button onclick="exportPlan()" style="width:100%;padding:13px;border:1px solid var(--border-2);border-radius:11px;background:var(--card);color:var(--text);font-size:14px;font-weight:600;font-family:var(--font-display);cursor:pointer;margin-bottom:8px;-webkit-tap-highlight-color:transparent">Export current plan</button>
       <button onclick="resetPlanToBuiltIn()" style="width:100%;padding:11px;border:none;border-radius:11px;background:transparent;color:var(--text-3);font-size:12.5px;font-weight:600;cursor:pointer">Reset to built-in plan</button>
-      <div style="font-size:11px;color:var(--text-3);line-height:1.5;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">Export gives you an editable JSON file (weeks &rarr; days &rarr; lines). Fix it, then Import to load it back in. Completed and logged sessions are stored separately and are kept when you change plans. Tap Back up everything above to also save them to a file.</div>
+      <div style="font-size:11px;color:var(--text-3);line-height:1.5;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">Export gives you an editable JSON file (weeks &rarr; days &rarr; lines). Fix it, then Import to load it back in. Completed and logged sessions are stored separately and are kept when you change plans. Tap Save backup to Files / iCloud above to also save them to a file.</div>
 
       <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border);text-align:center">
         <div style="width:44px;height:44px;margin:0 auto 8px;border-radius:11px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.2)"><svg viewBox="0 0 100 100" width="44" height="44" xmlns="http://www.w3.org/2000/svg"><rect width="100" height="100" rx="22" fill="#0A0A0A"/><circle cx="50" cy="24.75" r="13.75" fill="#D1343D"/><polygon points="22,41.6 78,41.6 78,89 61.4,89 61.4,71.9 55.07,89 44.93,89 38.6,71.9 38.6,89 22,89" fill="#D1343D"/></svg></div>
@@ -3436,6 +3813,7 @@ function toggleDone(key, el){
   const isDone = el.classList.toggle('done');
   if(isDone) haptic(12);
   localStorage.setItem('done_'+key, isDone ? '1' : '0');
+  if(typeof scheduleSilentBackup==='function') scheduleSilentBackup();
   try{ if(typeof renderConsistencyStrip==='function') renderConsistencyStrip(); }catch(e){}
   const check = el.querySelector('.sesh-check');
   if(check){
@@ -3593,6 +3971,7 @@ function saveTrackerField(wk, di, disc, field, val){
   updateTrackerSummary(wk);
   updateDayStatusPills(wk, di);
   autoCompleteFromLog(wk, di, disc, field, val);
+  scheduleSilentBackup();
 }
 
 function getTrackerVal(wk, di, disc, field){
@@ -3720,6 +4099,7 @@ function saveExtraField(wk, di, id, field, val){
   updateDayStatusPills(wk, di);
   refreshDaySessDiv(wk, di);
   refreshWeekExtras(wk);
+  if(typeof scheduleSilentBackup==='function') scheduleSilentBackup();
 }
 
 function refreshDaySessDiv(wk, di){
@@ -5079,11 +5459,10 @@ function toggleGear(key, idx){
 // ═══════════════════════════════════════════════════
 function getTodayPlan(){
   const today = new Date();
-  // Build local midnight for today and plan start to avoid UTC offset issues
   const todayLocal = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  const planStartLocal = new Date(2026, 5, 1); // June 1 2026, local midnight
+  const planStartLocal = planStartDate();
   const diffDays = Math.floor((todayLocal - planStartLocal) / 86400000);
-  if(diffDays < 0 || diffDays >= 280) return null;
+  if(diffDays < 0 || diffDays >= planWeekCount()*7) return null;
   const wk = Math.floor(diffDays/7)+1;
   const di = diffDays%7;
   const w = PLAN.find(function(x){ return x.wk===wk; });
@@ -5525,22 +5904,16 @@ function openActivityFeed(){
 }
 
 function openLogForDate(dateStr){
-  // Find this date in the PLAN
-  let foundDate = null;
+  let found = null;
   PLAN.forEach(function(w){
     w.days.forEach(function(d, di){
-      if(d.date === dateStr){
-        // Build a real Date object from the plan start + offset
-        const planStart = new Date(2026, 5, 1);
-        const dayOffset = (w.wk - 1) * 7 + di;
-        foundDate = new Date(planStart.getTime() + dayOffset * 86400000);
+      if(d.date === dateStr || (typeof normPlanDateLabel==='function' && normPlanDateLabel(d.date)===normPlanDateLabel(dateStr))){
+        found = {wk:w.wk, di:di};
       }
     });
   });
-  if(foundDate){
-    _qlSetDate(foundDate);
-    document.getElementById('quick-log-bg').classList.add('open');
-    document.body.style.overflow = 'hidden';
+  if(found){
+    openQuickLogAt(found.wk, found.di, dateFromPlanOffset((found.wk-1)*7+found.di));
   }
 }
 
@@ -5548,29 +5921,26 @@ function openLogForDate(dateStr){
 let _qlWk = null, _qlDi = null, _qlDay = null;
 
 function openQuickLog(){
-  const tp = getTodayPlan();
   const now = new Date();
-  // Default to today, or first plan day if before plan start
   const todayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const planStart = new Date(2026, 5, 1);
+  const planStart = planStartDate();
   const targetLocal = todayLocal >= planStart ? todayLocal : planStart;
-
   _qlSetDate(targetLocal);
   document.getElementById('quick-log-bg').classList.add('open');
   document.body.style.overflow = 'hidden';
 }
 
 function _qlSetDate(dateObj){
-  const planStart = new Date(2026, 5, 1);
-  const diffDays = Math.floor((dateObj - planStart) / 86400000);
-  const wk = Math.max(1, Math.min(40, Math.floor(diffDays/7)+1));
-  const di = Math.max(0, Math.min(6, diffDays%7));
+  const planStart = planStartDate();
+  const diffDays = Math.floor((localMidnight(dateObj) - planStart) / 86400000);
+  const n = planWeekCount();
+  const wk = Math.max(1, Math.min(n, Math.floor(diffDays/7)+1));
+  const di = Math.max(0, Math.min(6, ((diffDays%7)+7)%7));
   const w = PLAN.find(function(x){ return x.wk===wk; });
   const day = w ? w.days[di] : null;
 
   _qlWk = wk; _qlDi = di; _qlDay = day;
 
-  // Set date picker value
   const iso = dateObj.getFullYear()+'-'+String(dateObj.getMonth()+1).padStart(2,'0')+'-'+String(dateObj.getDate()).padStart(2,'0');
   const picker = document.getElementById('ql-date-picker');
   if(picker){
@@ -5607,13 +5977,27 @@ function plannedFor(text, disc){
   if(dm) out.dist=parseFloat(dm[1]);
   return out;
 }
-function fillPlanned(wk, di, disc){
-  var day=_qlDay; if(!day) return;
+function fillPlanned(wk, di, disc, quiet){
+  var day=_qlDay; if(!day) return false;
   var p=plannedFor(day.session, disc);
-  if(p.time!=null) saveTrackerField(wk,di,disc,'time',String(p.time));
-  if(p.dist!=null) saveTrackerField(wk,di,disc,'dist',String(p.dist));
+  var filled=false;
+  if(p.time!=null){ saveTrackerField(wk,di,disc,'time',String(p.time)); filled=true; }
+  if(p.dist!=null){ saveTrackerField(wk,di,disc,'dist',String(p.dist)); filled=true; }
+  if(!filled) return false;
   renderQuickLogSessions(wk,di,day);
-  if(typeof showToast==='function') showToast('Filled planned \u00b7 edit if it differed');
+  if(!quiet && typeof showToast==='function'){
+    showToast(p.dist!=null ? 'Filled as prescribed' : 'Time filled as prescribed \u00b7 import Garmin for exact km');
+  }
+  return true;
+}
+function fillPlannedDay(wk, di){
+  var day=_qlDay; if(!day) return;
+  var n=0;
+  detectDiscs(day.session).forEach(function(disc){ if(fillPlanned(wk,di,disc,true)) n++; });
+  renderQuickLogSessions(wk,di,day);
+  if(typeof showToast==='function'){
+    showToast(n ? ('Prescribed \u00b7 '+n+' session'+(n===1?'':'s')+' \u00b7 Garmin import for exact km') : 'No planned time/distance on those session lines');
+  }
 }
 function loggedHoursForWeek(wk){
   var mins=0, pfx='trk_'+wk+'_';
@@ -5625,8 +6009,15 @@ function renderQuickLogSessions(wk, di, day){
   const container = document.getElementById('ql-sessions');
   const discs = detectDiscs(day ? day.session : '');
 
-  // Planned sessions
   let html = '';
+  var canPrescribe = discs.some(function(disc){ var p=plannedFor(day?day.session:'',disc); return p.time!=null||p.dist!=null; });
+  if(canPrescribe){
+    html += '<button class="ql-day-prescribed" onclick="fillPlannedDay('+wk+','+di+')">Did today as prescribed</button>';
+  }
+  html += '<button class="ql-garmin-btn" onclick="pickGarminFile()" style="width:100%;justify-content:center;margin:0 0 8px;padding:10px 12px">Import Garmin TCX / GPX</button>'
+    +'<div class="ql-garmin-hint">Garmin Connect \u2192 activity \u2192 Export as TCX (or GPX). That fills exact km, time and HR so the projector matches the watch.</div>';
+
+  // Planned sessions
   if(discs.length){
     html += discs.map(function(disc){
       const meta = DISC_META[disc];
@@ -5642,7 +6033,7 @@ function renderQuickLogSessions(wk, di, day){
           +'</div>';
       }).join('');
       var _pl=plannedFor(day?day.session:'',disc);
-      var _planBtn=(_pl.time!=null||_pl.dist!=null)?'<button class="ql-asplanned" onclick="fillPlanned('+wk+','+di+',\''+disc+'\')">Did as planned</button>':'';
+      var _planBtn=(_pl.time!=null||_pl.dist!=null)?'<button class="ql-asplanned" onclick="fillPlanned('+wk+','+di+',\''+disc+'\')">Did as prescribed</button>':'';
       return '<div class="quick-log-sesh disc-'+disc+'">'
         +'<div class="quick-log-sesh-head">'
           +'<span class="sesh-disc-pill pill-'+disc+'">'+meta.label+'</span>'
@@ -5885,6 +6276,12 @@ setTimeout(requestNotificationPermission, 3000);
 setTimeout(flagMissedSessions, 800);
 // Data-safety backup nudge (after content settles)
 setTimeout(maybeShowBackupNudge, 1200);
+setTimeout(maybeRecoverFromIndexedDB, 500);
+saveSilentBackup();
+window.addEventListener('pagehide', function(){ saveSilentBackup(); });
+document.addEventListener('visibilitychange', function(){
+  if(document.visibilityState==='hidden') saveSilentBackup();
+});
 // Countdown milestone moment (100/50/30/14/7/3/1 days)
 setTimeout(checkCountdownMilestone, 1600);
 // First-run onboarding (shows only if not onboarded and no existing data)
@@ -5995,7 +6392,10 @@ setInterval(updateClock, 30000);
     <div class="quick-log-head">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
         <div class="quick-log-title" id="ql-title">Log a Session</div>
-        <button onclick="openActivityFeed()" style="display:inline-flex;align-items:center;gap:5px;background:var(--green-l);border:1px solid var(--border);color:var(--green);font-size:11px;font-weight:700;font-family:var(--font-display);padding:6px 11px;border-radius:var(--r-pill);cursor:pointer;flex-shrink:0;-webkit-tap-highlight-color:transparent"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>Activity</button>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+        <button class="ql-garmin-btn" onclick="pickGarminFile()" title="Import Garmin TCX or GPX">Garmin</button>
+        <button onclick="openActivityFeed()" style="display:inline-flex;align-items:center;gap:5px;background:var(--green-l);border:1px solid var(--border);color:var(--green);font-size:11px;font-weight:700;font-family:var(--font-display);padding:6px 11px;border-radius:var(--r-pill);cursor:pointer;flex-shrink:0;-webkit-tap-highlight-color:transparent">Activity</button>
+        </div>
       </div>
       <div class="quick-log-date" id="ql-date"></div>
       <div style="margin-top:10px">
