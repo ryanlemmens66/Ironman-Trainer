@@ -4059,52 +4059,131 @@ const RACE_GOALS = {
 };
 
 function computeProjection(){
+  // Honest IM projection: typical (median) training pace + real fade.
+  // Never use a single fastest session, factory-default paces, or the 11:30 goal as a stand-in.
   function ps(s){ s=String(s||''); var a=s.split(':'); return (parseInt(a[0])||0)*60+(parseInt(a[1])||0); }
-  var swimCSS=ps(localStorage.getItem('swimT100')||'1:35');
-  var runMax=ps(localStorage.getItem('runMax')||localStorage.getItem('runThresh')||'3:40');
-  var runEasy=ps(localStorage.getItem('runEasy')||'4:50');
-  function scan(disc,longKm,lo,hi){
-    var bl=0,ba=0;
-    PLAN.forEach(function(w){ w.days.forEach(function(d,di){
+  function median(arr){
+    if(!arr.length) return 0;
+    var a=arr.slice().sort(function(x,y){ return x-y; });
+    var m=Math.floor(a.length/2);
+    return a.length%2 ? a[m] : (a[m-1]+a[m])/2;
+  }
+  function extras(wk, di){
+    try{ return (typeof getExtraSessions==='function' ? getExtraSessions(wk, di) : null)||[]; }catch(e){ return []; }
+  }
+  function collect(disc){
+    var out=[];
+    (PLAN||[]).forEach(function(w){ (w.days||[]).forEach(function(d,di){
       var dist=parseFloat(getTrackerVal(w.wk,di,disc,'dist'))||0;
       var time=parseFloat(getTrackerVal(w.wk,di,disc,'time'))||0;
-      if(dist>0&&time>0){ var pp=time/dist; if(pp<lo||pp>hi) return; if(ba===0||pp<ba)ba=pp; if(dist>=longKm&&(bl===0||pp<bl))bl=pp; }
+      if(dist>0&&time>0) out.push({dist:dist,time:time,pace:time/dist,kph:dist/(time/60),wk:w.wk});
+      extras(w.wk,di).forEach(function(e){
+        if(e.disc!==disc) return;
+        var ed=parseFloat(getExtraVal(w.wk,di,e.id,'dist'))||0;
+        var et=parseFloat(getExtraVal(w.wk,di,e.id,'time'))||0;
+        if(ed>0&&et>0) out.push({dist:ed,time:et,pace:et/ed,kph:ed/(et/60),wk:w.wk});
+      });
     });});
-    return {bl:bl,ba:ba};
+    return out;
   }
-  var rs=scan('run',18,2.5,10), runMinKm=0, runSrc='';
-  if(rs.bl>0){ runMinKm=rs.bl*1.03; runSrc='your long runs'; }
-  else if(rs.ba>0){ runMinKm=rs.ba*1.12; runSrc='best run + fade'; }
-  else if(runEasy>0){ runMinKm=(runEasy/60)*1.02; runSrc='comfortable pace'; }
-  var runMins=runMinKm>0?runMinKm*42.2:0;
-  var ss=scan('swim',2,10,50), sw100=0, swSrc='';
-  if(ss.bl>0){ sw100=(ss.bl*0.1)*1.03; swSrc='your long swims'; }
-  else if(ss.ba>0){ sw100=(ss.ba*0.1)*1.06; swSrc='best swim + fade'; }
-  else if(swimCSS>0){ sw100=(swimCSS/60)*1.06; swSrc='swim CSS'; }
-  var swimMins=sw100>0?sw100*38:0;
-  var bbl=0,bba=0;
-  PLAN.forEach(function(w){ w.days.forEach(function(d,di){
-    var dist=parseFloat(getTrackerVal(w.wk,di,'bike','dist'))||0;
-    var time=parseFloat(getTrackerVal(w.wk,di,'bike','time'))||0;
-    if(dist>0&&time>0){ var sp=dist/(time/60); if(sp<15||sp>55) return; if(sp>bba)bba=sp; if(dist>=90&&sp>bbl)bbl=sp; }
-  });});
-  var bikeKmH=0, bikeSrc='';
-  if(bbl>0){ bikeKmH=bbl*0.98; bikeSrc='your long rides'; }
-  else if(bba>0){ bikeKmH=bba*0.94; bikeSrc='best ride + fade'; }
-  var bikeMins=bikeKmH>0?(180/bikeKmH)*60:0;
+  function recent(rows, n){
+    return rows.slice().sort(function(a,b){ return b.wk-a.wk; }).slice(0, n||6);
+  }
+  function pick(rows, isLong){
+    var longs=rows.filter(isLong);
+    if(longs.length) return {rows:recent(longs,6), long:true};
+    return {rows:recent(rows,6), long:false};
+  }
   function clampLeg(v,lo,hi){ return v>0?Math.max(lo,Math.min(hi,v)):0; }
-  swimMins=clampLeg(swimMins,40,150); bikeMins=clampLeg(bikeMins,240,660); runMins=clampLeg(runMins,150,480);
-  var PLANNED={swim:75,bike:395,run:210}, T=10, TARGET=690;
+  function hm(mins){ var h=Math.floor(mins/60),m=Math.round(mins%60); if(m===60){h++;m=0;} return h+':'+(m<10?'0':'')+m; }
+  function nSess(n, noun){ return n+' '+noun+(n===1?'':'s'); }
+
+  var swimTRaw=localStorage.getItem('swimT100');
+  var ftpRaw=localStorage.getItem('ftp');
+  var runMaxRaw=localStorage.getItem('runMax')||localStorage.getItem('runThresh');
+  var runEasyRaw=localStorage.getItem('runEasy');
+
+  // Swim: min/km 12–40 = 1:12–4:00/100m. Long = ≥1.5km. OW + traffic, not pool CSS.
+  var swims=collect('swim').filter(function(r){ return r.dist>=0.4 && r.pace>=12 && r.pace<=40; });
+  var swPick=pick(swims, function(r){ return r.dist>=1.5; });
+  var swimMins=0, swSrc='';
+  if(swPick.rows.length){
+    var swMed=median(swPick.rows.map(function(r){ return r.pace; })); // min/km
+    var ow=swPick.long?1.07:1.11;
+    swimMins=swMed*3.8*ow;
+    swSrc=swPick.long
+      ? (nSess(swPick.rows.length,'long swim')+' \u00b7 +OW')
+      : (nSess(swPick.rows.length,'swim')+' \u00b7 +OW / distance');
+  } else if(swimTRaw){
+    var css=ps(swimTRaw);
+    if(css>=70&&css<=180){
+      swimMins=((css+10)/60)*38; // CSS + 10s/100m for 3.8km open water
+      swSrc='CSS + 10s/100m open water';
+    }
+  }
+
+  // Bike: keep 18–42 km/h. Long = ≥70km. Rolling Taupo, not a fresh 40km.
+  var rides=collect('bike').filter(function(r){ return r.dist>=10 && r.kph>=18 && r.kph<=42; });
+  var bkPick=pick(rides, function(r){ return r.dist>=70; });
+  var bikeMins=0, bikeSrc='';
+  if(bkPick.rows.length){
+    var medKph=median(bkPick.rows.map(function(r){ return r.kph; }));
+    var raceKph=medKph*(bkPick.long?0.93:0.88);
+    bikeMins=(180/raceKph)*60;
+    bikeSrc=bkPick.long
+      ? (nSess(bkPick.rows.length,'long ride')+' \u00b7 Taupo rolling')
+      : (nSess(bkPick.rows.length,'ride')+' \u00b7 IM distance fade');
+  } else if(ftpRaw){
+    var ftp=parseInt(ftpRaw,10);
+    if(ftp>=80&&ftp<=400){
+      var imW=ftp*0.72;
+      var kph=18+imW*0.066; // ~137W \u2192 27.0 km/h on rolling terrain
+      bikeMins=(180/kph)*60;
+      bikeSrc='72% FTP \u00b7 rolling-course estimate';
+    }
+  }
+
+  // Run: 3.3–8.5 min/km. Long = ≥14km. Off-the-bike fade, not a standalone 5K.
+  var runs=collect('run').filter(function(r){ return r.dist>=2 && r.pace>=3.3 && r.pace<=8.5; });
+  var rnPick=pick(runs, function(r){ return r.dist>=14; });
+  var runMins=0, runSrc='';
+  if(rnPick.rows.length){
+    if(rnPick.long){
+      var longPace=median(rnPick.rows.map(function(r){ return r.pace; }));
+      runMins=longPace*1.12*42.2;
+      runSrc=nSess(rnPick.rows.length,'long run')+' \u00b7 +12% off the bike';
+    } else {
+      var riegel=rnPick.rows.map(function(r){ return r.time*Math.pow(42.2/r.dist, 1.06)*1.15; });
+      runMins=median(riegel);
+      runSrc=nSess(rnPick.rows.length,'run')+' \u00b7 Riegel +15% off the bike';
+    }
+  } else if(runMaxRaw){
+    var pace5=ps(runMaxRaw)/60;
+    if(pace5>=3.3&&pace5<=7){
+      runMins=pace5*5*Math.pow(42.2/5, 1.06)*1.15;
+      runSrc='5K pace \u2192 marathon \u00b7 +15% off the bike';
+    }
+  } else if(runEasyRaw){
+    var easy=ps(runEasyRaw)/60;
+    if(easy>=4&&easy<=8.5){
+      runMins=easy*1.10*42.2;
+      runSrc='comfortable pace \u00b7 +10% off the bike';
+    }
+  }
+
+  swimMins=clampLeg(swimMins,50,130);
+  bikeMins=clampLeg(bikeMins,310,570);
+  runMins=clampLeg(runMins,175,420);
+  var PLANNED={swim:75,bike:395,run:210}, T=12, TARGET=690;
   var anyData=(swimMins>0||bikeMins>0||runMins>0);
   var allData=(swimMins>0&&bikeMins>0&&runMins>0);
-  var total=(swimMins>0?swimMins:PLANNED.swim)+(bikeMins>0?bikeMins:PLANNED.bike)+(runMins>0?runMins:PLANNED.run)+T;
-  function hm(mins){ var h=Math.floor(mins/60),m=Math.round(mins%60); if(m===60){h++;m=0;} return h+':'+(m<10?'0':'')+m; }
-  var diff=Math.round(total-TARGET), under=diff<=0;
+  var total=allData ? (swimMins+bikeMins+runMins+T) : 0;
+  var diff=Math.round(total-TARGET), under=allData && diff<=0;
   return {
     swim:{mins:swimMins,src:swSrc}, bike:{mins:bikeMins,src:bikeSrc}, run:{mins:runMins,src:runSrc},
     planned:PLANNED, totalMins:total, anyData:anyData, allData:allData,
-    totalHM: anyData? hm(total) : '\u2014',
-    verdictLabel: anyData? (under? 'On track \u00b7 '+Math.abs(diff)+' min under' : '+'+diff+' min over 11:30') : '',
+    totalHM: allData? hm(total) : '\u2014',
+    verdictLabel: allData? (under? 'On track \u00b7 '+Math.abs(diff)+' min under' : '+'+diff+' min over 11:30') : '',
     verdictCls: under? 'proj-on-track':'proj-over', under:under, targetMins:TARGET
   };
 }
@@ -4245,17 +4324,19 @@ function renderStats(){
       +'</div>'
     +'</div>';
   }
-  var projHTML = projRow2(dIcon('swim',{size:14}),'Swim 3.8km',P.swim,P.planned.swim,'Enter swim CSS or log a swim')
-    +projRow2(dIcon('bike',{size:14}),'Bike 180km',P.bike,P.planned.bike,'Log a ride to project')
-    +projRow2(dIcon('run',{size:14}),'Run 42.2km',P.run,P.planned.run,'Enter comfortable pace or log a run')
+  var projHTML = projRow2(dIcon('swim',{size:14}),'Swim 3.8km',P.swim,P.planned.swim,'Log a swim (km + time) or enter CSS')
+    +projRow2(dIcon('bike',{size:14}),'Bike 180km',P.bike,P.planned.bike,'Log a ride (km + time) or enter FTP')
+    +projRow2(dIcon('run',{size:14}),'Run 42.2km',P.run,P.planned.run,'Log a run (km + time) or enter 5K pace')
     +'<div class="proj-hero">'
       +'<div class="proj-hero-label">Projected Finish</div>'
       +'<div class="proj-hero-time">'+P.totalHM+'</div>'
-      +(P.anyData?'<div class="proj-hero-verdict '+P.verdictCls+'">'+P.verdictLabel+'</div>':'')
-      +'<div class="proj-hero-sub">Target sub 11:30'+(P.anyData&&!P.allData?' \u00b7 some legs still at target pace':'')+'</div>'
+      +(P.allData?'<div class="proj-hero-verdict '+P.verdictCls+'">'+P.verdictLabel+'</div>':'')
+      +'<div class="proj-hero-sub">'+(P.allData
+        ? 'Typical training pace + Ironman fade \u00b7 T1/T2 12 min \u00b7 target sub 11:30'
+        : 'Needs a swim, ride and run estimate \u2014 won\u2019t fill gaps with the 11:30 goal')+'</div>'
     +'</div>';
   var projSection = '<div class="stat-section">'
-    +'<div class="stat-section-head"><div class="stat-section-title">Race Pace Projector</div><div class="stat-section-sub">Estimated Ironman finish from your paces &amp; logged sessions</div></div>'
+    +'<div class="stat-section-head"><div class="stat-section-title">Race Pace Projector</div><div class="stat-section-sub">Typical logged pace with Ironman fade \u2014 not your fastest session</div></div>'
     +'<div class="stat-section-body">'+projHTML+'</div>'
   +'</div>';
 
@@ -4540,10 +4621,10 @@ function renderRaceTab(){
     '</div>';
 
   var RP = computeProjection();
-  var raceProjStrip = RP.anyData
+  var raceProjStrip = RP.allData
     ? '<div class="race-proj-strip '+(RP.under?'on':'over')+'">'
         +'<div><div class="rps-label">Projected finish</div><div class="rps-time">'+RP.totalHM+'</div></div>'
-        +'<div class="rps-verdict">'+RP.verdictLabel+(RP.allData?'':'<div style="font-size:10px;font-weight:600;color:var(--text-3);margin-top:2px">some legs at target pace</div>')+'</div>'
+        +'<div class="rps-verdict">'+RP.verdictLabel+'<div style="font-size:10px;font-weight:600;color:var(--text-3);margin-top:2px">typical pace + IM fade</div></div>'
       +'</div>'
     : '';
   el.innerHTML = heroHTML + raceProjStrip +
