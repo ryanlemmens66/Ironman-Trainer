@@ -2408,16 +2408,8 @@ const PLAN_START_Y = 2026, PLAN_START_M = 6, PLAN_START_D = 27; // month is 0-in
 function planStartDate(){ return new Date(PLAN_START_Y, PLAN_START_M, PLAN_START_D); }
 function localMidnight(d){ d = d || new Date(); return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
 function planWeekCount(){ return (PLAN && PLAN.length) ? PLAN.length : 32; }
-// Whole calendar days between two dates, immune to daylight saving.
-// Subtracting local Date objects is 1 hour short across an NZDT change, which
-// used to drag every date->plan-slot lookup back by a day from 28 Sep 2026 on.
-function dayDiff(fromDate, toDate){
-  var a = Date.UTC(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate());
-  var b = Date.UTC(toDate.getFullYear(), toDate.getMonth(), toDate.getDate());
-  return Math.round((b - a) / 86400000);
-}
 function planDayOffset(dateObj){
-  return dayDiff(planStartDate(), dateObj || new Date());
+  return Math.floor((localMidnight(dateObj) - planStartDate()) / 86400000);
 }
 function dateFromPlanOffset(offset){
   return new Date(PLAN_START_Y, PLAN_START_M, PLAN_START_D + offset);
@@ -2826,7 +2818,7 @@ function restoreAllData(input){
   reader.readAsText(file);
 }
 
-var APP_VERSION = '2.8';
+var APP_VERSION = '2.7';
 
 // ── First-run onboarding ──────────────────────────────────────
 function maybeShowOnboarding(){
@@ -3198,7 +3190,6 @@ function renderWeeks(){
   el.appendChild(progressEl);
   renderProgressSummary();
 
-  const todayOffset=planDayOffset(new Date());
   PLAN.forEach(w=>{
     const ps=PHASE_STYLE[w.ph]||PHASE_STYLE['Foundation'];
     const pk=phaseKey(w.ph);
@@ -3210,7 +3201,8 @@ function renderWeeks(){
       if(w.ph==='RACE WEEK'&&di===5) cellCls='race-cell';
       else if(d.sd===1){ cellCls='s1-cell'; shiftTag='<div class="shift-tag s1-tag">Shift 1 · train</div>'; }
       else if(d.sd===2){ cellCls='s2-cell'; shiftTag='<div class="shift-tag s2-tag">Shift 2 · rest</div>'; sessionContent=''; }
-      const isToday=(todayOffset===(w.wk-1)*7+di);
+      const todayStr=new Date().toLocaleDateString('en-GB',{day:'2-digit',month:'short'});
+      const isToday=d.date===todayStr;
       const todayClass=isToday?' today-cell':'';
       const todayDot=isToday?'<span class="today-dot"></span>':'';
       daysHtml+='<div class="day-cell '+cellCls+todayClass+'">'
@@ -3429,16 +3421,13 @@ function openEdit(wk,e){
   document.getElementById('edit-note').value=w.note;
   const df=document.getElementById('day-fields');
   df.innerHTML='';
-  const esc=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  let dfHtml='';
   w.days.forEach((d,di)=>{
     const label=DAYS[di]+' '+d.date;
-    dfHtml+=`<div class="form-group">
-      <label>${esc(label)}${d.sd===1?'  Shift 1':d.sd===2?'  Shift 2':''}</label>
-      <textarea id="day-${di}" rows="4">${esc(d.session)}</textarea>
+    df.innerHTML+=`<div class="form-group">
+      <label>${label}${d.sd===1?'  Shift 1':d.sd===2?'  Shift 2':''}</label>
+      <textarea id="day-${di}" rows="4">${d.session}</textarea>
     </div>`;
   });
-  df.innerHTML=dfHtml;
   document.getElementById('modal-bg').classList.add('open');
 }
 
@@ -3497,7 +3486,7 @@ function updateProgress(wk){
   let total = 0, done = 0;
   w.days.forEach((d,di)=>{
     const txt = d.session;
-    if(!txt || d.sd===2) return;
+    if(!txt) return;
     const lines = txt.split(/\n|\\n/).map(l=>l.trim()).filter(Boolean);
     const DISC_KEYS = ['swim','bike','long ride','run','brick run','long run','strength'];
     lines.forEach((l,li)=>{
@@ -3836,15 +3825,25 @@ function triggerInstall(){
   }
 }
 
-// ── PWA: Service worker ───────────────────────────────────────
-// Registered from ./sw.js, not from a blob: URL — browsers reject blob-hosted
-// workers outright, so the old inline version never installed and "works
-// offline" was never true. Fails quietly when the app runs from file://,
-// where service workers are unavailable by design.
-if('serviceWorker' in navigator && location.protocol.indexOf('http')===0){
-  window.addEventListener('load', function(){
-    navigator.serviceWorker.register('./sw.js').catch(function(){});
-  });
+// ── PWA: Service worker (inline via blob) ─────────────────────
+if('serviceWorker' in navigator){
+  const swCode = `
+    const CACHE = 'im-plan-v11';
+    self.addEventListener('install', e => {
+      e.waitUntil(caches.open(CACHE).then(cache => cache.addAll(['.', location.href])));
+      self.skipWaiting();
+    });
+    self.addEventListener('activate', e => {
+      e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))));
+      self.clients.claim();
+    });
+    self.addEventListener('fetch', e => {
+      e.respondWith(caches.match(e.request).then(r => r || fetch(e.request).catch(()=>caches.match('.'))));
+    });
+  `;
+  const blob = new Blob([swCode], {type:'text/javascript'});
+  const swUrl = URL.createObjectURL(blob);
+  navigator.serviceWorker.register(swUrl).catch(()=>{});
 }
 
 // ── ask the browser to keep our storage (iOS can evict otherwise) ──
@@ -3915,7 +3914,7 @@ function renderCountdown(){
   if(rtSecs) rtSecs.textContent = String(secs).padStart(2,'0');
 
   // Progress bar
-  const totalDays = Math.max(1, dayDiff(planStartDate(), race));
+  const totalDays = Math.max(1, Math.floor((race - planStartDate()) / 86400000));
   const elapsed   = totalDays - days;
   const pct = Math.max(0, Math.min(100, Math.round(elapsed / totalDays * 100)));
   const fill = document.getElementById('progress-fill');
@@ -4617,7 +4616,8 @@ function getTomorrowSession(){
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate()+1);
   tomorrow.setHours(0,0,0,0);
-  const diffDays = planDayOffset(tomorrow);
+  const planStart = planStartDate();
+  const diffDays = Math.floor((tomorrow - planStart)/86400000);
   if(diffDays < 0) return null;
   const wk = Math.floor(diffDays/7)+1;
   const di = diffDays%7;
@@ -5104,7 +5104,10 @@ function toggleGear(key, idx){
 // ═══════════════════════════════════════════════════
 function getTodayPlan(){
   const today = new Date();
-  const diffDays = planDayOffset(today);
+  // Build local midnight for today and plan start to avoid UTC offset issues
+  const todayLocal = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const planStartLocal = planStartDate(); // 27 Jul 2026, local midnight
+  const diffDays = Math.floor((todayLocal - planStartLocal) / 86400000);
   if(diffDays < 0 || diffDays >= planWeekCount()*7) return null;
   const wk = Math.floor(diffDays/7)+1;
   const di = diffDays%7;
@@ -5577,7 +5580,8 @@ function openQuickLog(){
 }
 
 function _qlSetDate(dateObj){
-  const diffDays = planDayOffset(dateObj);
+  const planStart = planStartDate();
+  const diffDays = Math.floor((dateObj - planStart) / 86400000);
   const n = planWeekCount();
   const wk = Math.max(1, Math.min(n, Math.floor(diffDays/7)+1));
   const di = Math.max(0, Math.min(6, diffDays%7));
@@ -5835,7 +5839,7 @@ function renderNextShiftCallout(){
     });
   });
 
-  function daysUntil(d){ return dayDiff(today, d); }
+  function daysUntil(d){ return Math.round((d - today)/86400000); }
   function dayLabel(d){ return d.toLocaleDateString('en-NZ',{weekday:'long',day:'numeric',month:'long'}); }
 
   let html = '';
