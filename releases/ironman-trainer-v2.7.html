@@ -2408,16 +2408,8 @@ const PLAN_START_Y = 2026, PLAN_START_M = 6, PLAN_START_D = 27; // month is 0-in
 function planStartDate(){ return new Date(PLAN_START_Y, PLAN_START_M, PLAN_START_D); }
 function localMidnight(d){ d = d || new Date(); return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
 function planWeekCount(){ return (PLAN && PLAN.length) ? PLAN.length : 32; }
-// Whole calendar days between two dates, immune to daylight saving.
-// Subtracting local Date objects is 1 hour short across an NZDT change, which
-// used to drag every date->plan-slot lookup back by a day from 28 Sep 2026 on.
-function dayDiff(fromDate, toDate){
-  var a = Date.UTC(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate());
-  var b = Date.UTC(toDate.getFullYear(), toDate.getMonth(), toDate.getDate());
-  return Math.round((b - a) / 86400000);
-}
 function planDayOffset(dateObj){
-  return dayDiff(planStartDate(), dateObj || new Date());
+  return Math.floor((localMidnight(dateObj) - planStartDate()) / 86400000);
 }
 function dateFromPlanOffset(offset){
   return new Date(PLAN_START_Y, PLAN_START_M, PLAN_START_D + offset);
@@ -2826,7 +2818,7 @@ function restoreAllData(input){
   reader.readAsText(file);
 }
 
-var APP_VERSION = '2.9';
+var APP_VERSION = '2.7';
 
 // ── First-run onboarding ──────────────────────────────────────
 function maybeShowOnboarding(){
@@ -3198,7 +3190,6 @@ function renderWeeks(){
   el.appendChild(progressEl);
   renderProgressSummary();
 
-  const todayOffset=planDayOffset(new Date());
   PLAN.forEach(w=>{
     const ps=PHASE_STYLE[w.ph]||PHASE_STYLE['Foundation'];
     const pk=phaseKey(w.ph);
@@ -3210,7 +3201,8 @@ function renderWeeks(){
       if(w.ph==='RACE WEEK'&&di===5) cellCls='race-cell';
       else if(d.sd===1){ cellCls='s1-cell'; shiftTag='<div class="shift-tag s1-tag">Shift 1 · train</div>'; }
       else if(d.sd===2){ cellCls='s2-cell'; shiftTag='<div class="shift-tag s2-tag">Shift 2 · rest</div>'; sessionContent=''; }
-      const isToday=(todayOffset===(w.wk-1)*7+di);
+      const todayStr=new Date().toLocaleDateString('en-GB',{day:'2-digit',month:'short'});
+      const isToday=d.date===todayStr;
       const todayClass=isToday?' today-cell':'';
       const todayDot=isToday?'<span class="today-dot"></span>':'';
       daysHtml+='<div class="day-cell '+cellCls+todayClass+'">'
@@ -3429,16 +3421,13 @@ function openEdit(wk,e){
   document.getElementById('edit-note').value=w.note;
   const df=document.getElementById('day-fields');
   df.innerHTML='';
-  const esc=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  let dfHtml='';
   w.days.forEach((d,di)=>{
     const label=DAYS[di]+' '+d.date;
-    dfHtml+=`<div class="form-group">
-      <label>${esc(label)}${d.sd===1?'  Shift 1':d.sd===2?'  Shift 2':''}</label>
-      <textarea id="day-${di}" rows="4">${esc(d.session)}</textarea>
+    df.innerHTML+=`<div class="form-group">
+      <label>${label}${d.sd===1?'  Shift 1':d.sd===2?'  Shift 2':''}</label>
+      <textarea id="day-${di}" rows="4">${d.session}</textarea>
     </div>`;
   });
-  df.innerHTML=dfHtml;
   document.getElementById('modal-bg').classList.add('open');
 }
 
@@ -3497,7 +3486,7 @@ function updateProgress(wk){
   let total = 0, done = 0;
   w.days.forEach((d,di)=>{
     const txt = d.session;
-    if(!txt || d.sd===2) return;
+    if(!txt) return;
     const lines = txt.split(/\n|\\n/).map(l=>l.trim()).filter(Boolean);
     const DISC_KEYS = ['swim','bike','long ride','run','brick run','long run','strength'];
     lines.forEach((l,li)=>{
@@ -3836,15 +3825,25 @@ function triggerInstall(){
   }
 }
 
-// ── PWA: Service worker ───────────────────────────────────────
-// Registered from ./sw.js, not from a blob: URL — browsers reject blob-hosted
-// workers outright, so the old inline version never installed and "works
-// offline" was never true. Fails quietly when the app runs from file://,
-// where service workers are unavailable by design.
-if('serviceWorker' in navigator && location.protocol.indexOf('http')===0){
-  window.addEventListener('load', function(){
-    navigator.serviceWorker.register('./sw.js').catch(function(){});
-  });
+// ── PWA: Service worker (inline via blob) ─────────────────────
+if('serviceWorker' in navigator){
+  const swCode = `
+    const CACHE = 'im-plan-v11';
+    self.addEventListener('install', e => {
+      e.waitUntil(caches.open(CACHE).then(cache => cache.addAll(['.', location.href])));
+      self.skipWaiting();
+    });
+    self.addEventListener('activate', e => {
+      e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))));
+      self.clients.claim();
+    });
+    self.addEventListener('fetch', e => {
+      e.respondWith(caches.match(e.request).then(r => r || fetch(e.request).catch(()=>caches.match('.'))));
+    });
+  `;
+  const blob = new Blob([swCode], {type:'text/javascript'});
+  const swUrl = URL.createObjectURL(blob);
+  navigator.serviceWorker.register(swUrl).catch(()=>{});
 }
 
 // ── ask the browser to keep our storage (iOS can evict otherwise) ──
@@ -3915,7 +3914,7 @@ function renderCountdown(){
   if(rtSecs) rtSecs.textContent = String(secs).padStart(2,'0');
 
   // Progress bar
-  const totalDays = Math.max(1, dayDiff(planStartDate(), race));
+  const totalDays = Math.max(1, Math.floor((race - planStartDate()) / 86400000));
   const elapsed   = totalDays - days;
   const pct = Math.max(0, Math.min(100, Math.round(elapsed / totalDays * 100)));
   const fill = document.getElementById('progress-fill');
@@ -4083,79 +4082,39 @@ const RACE_GOALS = {
 function computeProjection(){
   function ps(s){ s=String(s||''); var a=s.split(':'); return (parseInt(a[0])||0)*60+(parseInt(a[1])||0); }
   var swimCSS=ps(localStorage.getItem('swimT100')||'1:35');
+  var runMax=ps(localStorage.getItem('runMax')||localStorage.getItem('runThresh')||'3:40');
   var runEasy=ps(localStorage.getItem('runEasy')||'4:50');
-
-  // Race-day fade applied to training pace. A projection is only honest if it
-  // assumes Ironman pacing rather than best-session pacing: the bike is ridden
-  // well under threshold to protect the marathon, and the marathon itself is
-  // run off six hours of riding.
-  var FADE = { swim: 1.06, bike: 0.95, run: 1.20 };
-
-  function median(a){
-    if(!a.length) return 0;
-    a=a.slice().sort(function(x,y){ return x-y; });
-    var m=Math.floor(a.length/2);
-    return a.length%2 ? a[m] : (a[m-1]+a[m])/2;
-  }
-
-  // Collect one usable figure per logged session — km/h for the bike, min/km
-  // for swim and run. Sessions whose own numbers disagree are dropped: the
-  // logger stores speed/pace alongside distance and time, so a mistyped
-  // duration shows up as a contradiction rather than as a very fast athlete.
-  function samples(disc){
-    var out=[];
-    PLAN.forEach(function(w){ (w.days||[]).forEach(function(d,di){
+  function scan(disc,longKm,lo,hi){
+    var bl=0,ba=0;
+    PLAN.forEach(function(w){ w.days.forEach(function(d,di){
       var dist=parseFloat(getTrackerVal(w.wk,di,disc,'dist'))||0;
       var time=parseFloat(getTrackerVal(w.wk,di,disc,'time'))||0;
-      if(!(dist>0 && time>0)) return;
-      var val, stated;
-      if(disc==='bike'){
-        val=dist/(time/60);
-        if(val<15||val>55) return;
-        stated=parseFloat(getTrackerVal(w.wk,di,'bike','speed'))||0;
-      } else {
-        val=time/dist;
-        var lo=(disc==='swim')?10:2.5, hi=(disc==='swim')?50:10;
-        if(val<lo||val>hi) return;
-        stated=(disc==='run') ? (parseFloat(getTrackerVal(w.wk,di,'run','pace'))||0) : 0;
-      }
-      if(stated>0 && Math.abs(val-stated)/stated>0.15) return;
-      out.push({dist:dist, val:val});
+      if(dist>0&&time>0){ var pp=time/dist; if(pp<lo||pp>hi) return; if(ba===0||pp<ba)ba=pp; if(dist>=longKm&&(bl===0||pp<bl))bl=pp; }
     });});
-    return out;
+    return {bl:bl,ba:ba};
   }
-
-  // Prefer race-distance-ish sessions, but fall back to shorter ones early in
-  // the plan when no long rides exist yet. Median, not best — one outlier
-  // should not decide the whole leg.
-  function pick(list, longKm, midKm, noun){
-    var g=list.filter(function(x){ return x.dist>=longKm; }), label='long '+noun;
-    if(g.length<2){
-      var m=list.filter(function(x){ return x.dist>=midKm; });
-      if(m.length>g.length){ g=m; label='longer '+noun; }
-    }
-    if(!g.length){ g=list; label=noun; }
-    if(!g.length) return {v:0, src:''};
-    return {v:median(g.map(function(x){ return x.val; })),
-            src:g.length+' '+label+(g.length>1?' (median)':'')};
-  }
-
-  var rp=pick(samples('run'), 18, 12, 'runs'), runMinKm=0, runSrc='';
-  if(rp.v>0){ runMinKm=rp.v*FADE.run; runSrc=rp.src; }
-  else if(runEasy>0){ runMinKm=(runEasy/60)*1.10; runSrc='your easy pace'; }
+  var rs=scan('run',18,2.5,10), runMinKm=0, runSrc='';
+  if(rs.bl>0){ runMinKm=rs.bl*1.03; runSrc='your long runs'; }
+  else if(rs.ba>0){ runMinKm=rs.ba*1.12; runSrc='best run + fade'; }
+  else if(runEasy>0){ runMinKm=(runEasy/60)*1.02; runSrc='comfortable pace'; }
   var runMins=runMinKm>0?runMinKm*42.2:0;
-
-  var sp=pick(samples('swim'), 2, 1.5, 'swims'), sw100=0, swSrc='';
-  if(sp.v>0){ sw100=(sp.v*0.1)*FADE.swim; swSrc=sp.src; }
-  else if(swimCSS>0){ sw100=(swimCSS/60)*1.10; swSrc='your swim CSS'; }
+  var ss=scan('swim',2,10,50), sw100=0, swSrc='';
+  if(ss.bl>0){ sw100=(ss.bl*0.1)*1.03; swSrc='your long swims'; }
+  else if(ss.ba>0){ sw100=(ss.ba*0.1)*1.06; swSrc='best swim + fade'; }
+  else if(swimCSS>0){ sw100=(swimCSS/60)*1.06; swSrc='swim CSS'; }
   var swimMins=sw100>0?sw100*38:0;
-
-  var bp=pick(samples('bike'), 90, 40, 'rides'), bikeKmH=0, bikeSrc='';
-  if(bp.v>0){ bikeKmH=bp.v*FADE.bike; bikeSrc=bp.src; }
+  var bbl=0,bba=0;
+  PLAN.forEach(function(w){ w.days.forEach(function(d,di){
+    var dist=parseFloat(getTrackerVal(w.wk,di,'bike','dist'))||0;
+    var time=parseFloat(getTrackerVal(w.wk,di,'bike','time'))||0;
+    if(dist>0&&time>0){ var sp=dist/(time/60); if(sp<15||sp>55) return; if(sp>bba)bba=sp; if(dist>=90&&sp>bbl)bbl=sp; }
+  });});
+  var bikeKmH=0, bikeSrc='';
+  if(bbl>0){ bikeKmH=bbl*0.98; bikeSrc='your long rides'; }
+  else if(bba>0){ bikeKmH=bba*0.94; bikeSrc='best ride + fade'; }
   var bikeMins=bikeKmH>0?(180/bikeKmH)*60:0;
-
   function clampLeg(v,lo,hi){ return v>0?Math.max(lo,Math.min(hi,v)):0; }
-  swimMins=clampLeg(swimMins,40,150); bikeMins=clampLeg(bikeMins,270,700); runMins=clampLeg(runMins,165,480);
+  swimMins=clampLeg(swimMins,40,150); bikeMins=clampLeg(bikeMins,240,660); runMins=clampLeg(runMins,150,480);
   var PLANNED={swim:75,bike:395,run:210}, T=10, TARGET=690;
   var anyData=(swimMins>0||bikeMins>0||runMins>0);
   var allData=(swimMins>0&&bikeMins>0&&runMins>0);
@@ -4657,7 +4616,8 @@ function getTomorrowSession(){
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate()+1);
   tomorrow.setHours(0,0,0,0);
-  const diffDays = planDayOffset(tomorrow);
+  const planStart = planStartDate();
+  const diffDays = Math.floor((tomorrow - planStart)/86400000);
   if(diffDays < 0) return null;
   const wk = Math.floor(diffDays/7)+1;
   const di = diffDays%7;
@@ -5144,7 +5104,10 @@ function toggleGear(key, idx){
 // ═══════════════════════════════════════════════════
 function getTodayPlan(){
   const today = new Date();
-  const diffDays = planDayOffset(today);
+  // Build local midnight for today and plan start to avoid UTC offset issues
+  const todayLocal = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const planStartLocal = planStartDate(); // 27 Jul 2026, local midnight
+  const diffDays = Math.floor((todayLocal - planStartLocal) / 86400000);
   if(diffDays < 0 || diffDays >= planWeekCount()*7) return null;
   const wk = Math.floor(diffDays/7)+1;
   const di = diffDays%7;
@@ -5617,7 +5580,8 @@ function openQuickLog(){
 }
 
 function _qlSetDate(dateObj){
-  const diffDays = planDayOffset(dateObj);
+  const planStart = planStartDate();
+  const diffDays = Math.floor((dateObj - planStart) / 86400000);
   const n = planWeekCount();
   const wk = Math.max(1, Math.min(n, Math.floor(diffDays/7)+1));
   const di = Math.max(0, Math.min(6, diffDays%7));
@@ -5875,7 +5839,7 @@ function renderNextShiftCallout(){
     });
   });
 
-  function daysUntil(d){ return dayDiff(today, d); }
+  function daysUntil(d){ return Math.round((d - today)/86400000); }
   function dayLabel(d){ return d.toLocaleDateString('en-NZ',{weekday:'long',day:'numeric',month:'long'}); }
 
   let html = '';
