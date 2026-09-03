@@ -5,7 +5,8 @@ built as a single self-contained HTML file. No build step, no dependencies, no s
 open the file and it runs. All training data lives in the browser's `localStorage`
 on the device it was logged on.
 
-Live site: <https://ryanlemmens66.github.io/Ironman-Trainer/>
+Deployed to Netlify. The GitHub Pages copy at
+<https://ryanlemmens66.github.io/Ironman-Trainer/> is kept as a fallback.
 
 ---
 
@@ -18,6 +19,7 @@ Live site: <https://ryanlemmens66.github.io/Ironman-Trainer/>
 | `sw.js` | Service worker. Network-first, cache fallback, so the app opens with no signal. |
 | `releases/` | Frozen, verified copies of each edition. Never edited after release. |
 | `tools/check.mjs` | Integrity checker. Run it before every release. |
+| `tools/build-netlify.mjs` | Builds `dist/netlify/` (and a zip) to upload. |
 | `.nojekyll` | Stops GitHub Pages from running Jekyll over the files. |
 
 ## Editing an edition
@@ -30,9 +32,16 @@ Live site: <https://ryanlemmens66.github.io/Ironman-Trainer/>
    they should.
 4. Add a line to `CHANGELOG.md`.
 5. Freeze the snapshot: `cp "Ironman Trainer.html" releases/ironman-trainer-vX.Y.html`
-6. Commit both, push to `main`. GitHub Pages publishes within a minute or so.
+6. Build the upload bundle: `node tools/build-netlify.mjs`
+7. Drag `dist/netlify/` (or the zip beside it) onto <https://app.netlify.com/drop>.
+8. Commit steps 1–5, push to `main`. That also refreshes the Pages fallback.
 
-Rolling back is a file copy: `cp releases/ironman-trainer-v2.8.html "Ironman Trainer.html"`.
+The build script copies the app to `index.html` and stamps the current
+`APP_VERSION` into the worker's cache name — the step most easily missed by
+hand, and the one that leaves people on a stale edition.
+
+Rolling back is a file copy: `cp releases/ironman-trainer-v2.10.html "Ironman Trainer.html"`,
+then rebuild and re-upload.
 
 ## What the checker verifies
 
