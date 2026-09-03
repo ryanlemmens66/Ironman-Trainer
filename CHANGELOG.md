@@ -3,6 +3,42 @@
 Every released edition is frozen in `releases/`. To roll back, copy one over
 `Ironman Trainer.html`.
 
+## v2.10 — 3 Sep 2026
+
+`releases/ironman-trainer-v2.10.html`
+
+Visual pass, done by rendering the app in a real browser at iPhone size with a
+season of logged training in it and reading the screenshots.
+
+- **The days-to-go number was clipped.** `background-clip:text` paints only
+  across the element's background box, and the negative letter-spacing pulled
+  that box inside the glyph ink, slicing the leading digit off "182".
+- **Day headings read "MON31 Aug".** The day name and date sat flush against
+  each other with no gap.
+- **The plan toolbar appeared on every tab.** "Tap a session to mark complete",
+  Expand all and Collapse all act on the week list, but sat above the Stats,
+  Race and Shifts content too, along with the intensity legend. The body now
+  carries the active view and both are scoped to the plan tab.
+- **The race timeline labels collided.** T1 and T2 are 0.7% of the bar, but a
+  flex item will not shrink below its content, so "T1"/"T2" overflowed across
+  SWIM, BIKE and RUN. The transitions now show as bar segments only — the
+  splits table below lists both in full — and the legs can shrink properly.
+- **The shifts calendar mis-columned any month that starts mid-week.** Rows
+  padded only at the end, so 1–2 Aug (a Saturday and Sunday) sat in the Monday
+  and Tuesday columns. Rows are now padded at the front to the first day's
+  weekday, and the grid means what it looks like.
+- **Strength sessions lost their colour.** The tracker and quick-log sheet build
+  their class from the discipline key, giving `disc-strength` and
+  `pill-strength`, while the stylesheet only defined `disc-str` and `pill-str`.
+  Strength rows rendered with no tint, no left border and no label colour.
+- **The training load chart floated.** No baseline, and weeks with no data drew
+  a 2px speck. It now has a baseline rule, first/last week labels, and empty
+  weeks read as a faint track.
+- The tab bar leaned on `backdrop-filter` for legibility, so page content showed
+  through wherever the blur is unavailable — including iOS "Reduce
+  Transparency". Raised to 0.97 with a solid fallback.
+- "1 rest days" now reads "1 rest day".
+
 ## v2.9 — 3 Sep 2026
 
 `releases/ironman-trainer-v2.9.html`

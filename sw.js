@@ -8,7 +8,7 @@
  *
  * Bump CACHE when you cut a new edition (see CHANGELOG.md).
  */
-const CACHE = 'im-trainer-v2.9';
+const CACHE = 'im-trainer-v2.10';
 
 const PRECACHE = [
   './',
