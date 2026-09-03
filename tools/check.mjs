@@ -151,6 +151,47 @@ PLAN.forEach(w => (w.days || []).forEach((d, di) => {
   }
 }));
 
+// ── 7b. the race projection stays sane when a logged session is wrong ─
+// A single mistyped duration (91.7 km entered as 135 min, next to a logged
+// average speed of 28.1 km/h) once pulled the whole projection to 8:57 for an
+// athlete targeting 11:30. The projection must read the median of a discipline
+// and ignore entries that contradict their own speed/pace field.
+{
+  const grab = name => {
+    const i = src.indexOf(`function ${name}(`);
+    if (i < 0) return null;
+    // functions here are top-level and end at the first column-0 brace
+    const end = src.indexOf('\n}', i);
+    return end < 0 ? null : src.slice(i, end + 2);
+  };
+  const parts = ['getTrackerKey', 'getTrackerVal', 'computeProjection'].map(grab);
+  if (parts.some(p => !p)) fail('could not extract the projection functions to test them');
+  else {
+    const store = {};
+    const day = { date: '01 Jan', sd: 0, session: 'Swim 60min\nBike 120min\nRun 60min' };
+    const PLAN = Array.from({ length: 6 }, (_, i) => ({ wk: i + 1, ph: 'IM Build', hrs: 12, note: '', days: Array.from({ length: 7 }, () => ({ ...day })) }));
+    const set = (wk, di, disc, f, v) => { store[`trk_${wk}_${di}_${disc}_${f}`] = String(v); };
+    // five honest rides at ~28 km/h, plus one whose duration contradicts its
+    // own logged speed (the real-world entry error this test exists for)
+    [1, 2, 3, 4, 5].forEach(wk => { set(wk, 1, 'bike', 'dist', 95); set(wk, 1, 'bike', 'time', 204); set(wk, 1, 'bike', 'speed', 28); });
+    set(6, 1, 'bike', 'dist', 91.7); set(6, 1, 'bike', 'time', 135); set(6, 1, 'bike', 'speed', 28.1);
+    [1, 2, 3, 4, 5].forEach(wk => { set(wk, 2, 'run', 'dist', 22); set(wk, 2, 'run', 'time', 110); });
+    [1, 2, 3, 4, 5].forEach(wk => { set(wk, 0, 'swim', 'dist', 3); set(wk, 0, 'swim', 'time', 47); });
+
+    const ctx = { PLAN, Math, Date, localStorage: { getItem: k => (k in store ? store[k] : null) } };
+    vm.createContext(ctx);
+    try {
+      vm.runInContext(parts.join('\n'), ctx);
+      const P = vm.runInContext('computeProjection()', ctx);
+      const hrs = P.totalMins / 60;
+      // 28 km/h rides cannot yield a sub-6h bike split, whatever else changes
+      if (P.bike.mins < 330) fail(`projection's bike leg is ${(P.bike.mins / 60).toFixed(2)}h off 28 km/h rides — an outlier entry is being trusted`);
+      if (hrs < 9.5 || hrs > 15) fail(`projected finish ${hrs.toFixed(2)}h is outside any plausible range for the seeded athlete`);
+      if (!/median/.test(P.bike.src || '')) note(`projection bike source reads "${P.bike.src}" — expected a median of several rides`);
+    } catch (e) { fail(`computeProjection threw: ${e.message}`); }
+  }
+}
+
 // ── 8. inline handlers point at functions that exist ─────────────────
 const defined = new Set([
   ...[...src.matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\(/g)].map(m => m[1]),

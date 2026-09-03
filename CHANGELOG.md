@@ -3,6 +3,29 @@
 Every released edition is frozen in `releases/`. To roll back, copy one over
 `Ironman Trainer.html`.
 
+## v2.9 — 3 Sep 2026
+
+`releases/ironman-trainer-v2.9.html`
+
+- **Fixed: the race projection read 8:57 for an athlete targeting 11:30.** Two
+  causes, both real. The model took the single *best* session in each
+  discipline and applied a 2-3% fade, which is best-session pacing, not Ironman
+  pacing. And it trusted a ride whose numbers contradicted themselves — 91.7 km
+  logged with a 135-minute duration next to a logged average speed of 28.1 km/h,
+  which implies 196 minutes. That one entry alone set the bike leg at 4:30.
+  The projection now takes the **median** of the qualifying sessions in each
+  discipline, so no single entry can decide a leg, and **discards sessions whose
+  distance and time disagree with their own logged speed or pace by more than
+  15%**. Race-day fade is now swim x1.06, bike x0.95, run x1.20 — the marathon
+  is run off six hours of riding, and the projection now says so. On the same
+  training data the projection reads 11:22, and each leg names how many sessions
+  it came from.
+- Session sampling falls back to shorter sessions early in a plan, when no
+  90 km rides or 18 km runs exist yet, instead of silently reverting to the
+  single fastest session of any length.
+- `tools/check.mjs` now fails on a projection that trusts a self-contradictory
+  entry, seeded with the exact entry error that caused this.
+
 ## v2.8 — 2 Sep 2026
 
 `releases/ironman-trainer-v2.8.html`

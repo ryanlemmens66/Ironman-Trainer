@@ -46,6 +46,8 @@ Rolling back is a file copy: `cp releases/ironman-trainer-v2.8.html "Ironman Tra
   this is the daylight-saving regression test; see below
 - a session whose first line is not a discipline heading (it would render as one
   untickable grey block)
+- a race projection that trusts a session whose distance and time contradict
+  its own logged speed or pace, or that lets one outlier decide a leg
 - an inline `onclick` calling a function that does not exist
 - duplicate element ids in the static markup
 - `sw.js` precaching a file that isn't there, or the app registering a `blob:` worker
