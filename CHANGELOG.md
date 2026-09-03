@@ -3,6 +3,25 @@
 Every released edition is frozen in `releases/`. To roll back, copy one over
 `Ironman Trainer.html`.
 
+## v2.11 — 3 Sep 2026
+
+`releases/ironman-trainer-v2.11.html`
+
+- **Fixed: Import wrote your data but the app kept showing the old plan.** The
+  plan is read from storage once at startup and then held in memory, so an
+  imported plan did not take effect until the app was closed and reopened —
+  and nothing said so. Import now reloads once the keys are written, which is
+  what a full restore already did.
+- **Import now also accepts a full backup file.** Two shapes reach that button:
+  the flat export from the Import/Export row, and the wrapped file from
+  Plan settings → Backup. Feeding it the wrapped one used to write `_app`,
+  `data` and friends as literal keys, show "imported successfully", and restore
+  nothing. Both shapes work, and a file with no usable keys now fails honestly.
+- Added `tools/build-netlify.mjs`: copies the app to `index.html`, rewrites the
+  service worker for that layout, and stamps `APP_VERSION` into its cache name —
+  the step most easily missed by hand, and the one that strands people on a
+  stale edition. Netlify is the deploy target now; Pages stays as a fallback.
+
 ## v2.10 — 3 Sep 2026
 
 `releases/ironman-trainer-v2.10.html`
